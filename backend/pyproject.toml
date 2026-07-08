@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finclone"
+version = "0.1.0"
+description = "FinClone backend — SEC data pipeline, taxonomy engine, and REST API"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy>=2.0",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "openpyxl>=3.1",
+    "openai>=1.40",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["finclone*"]

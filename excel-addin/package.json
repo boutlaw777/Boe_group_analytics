@@ -1,0 +1,13 @@
+{
+  "name": "finclone-excel-addin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "certs": "office-addin-dev-certs install",
+    "dev": "http-server src -p 3100 -S -C %USERPROFILE%/.office-addin-dev-certs/localhost.crt -K %USERPROFILE%/.office-addin-dev-certs/localhost.key --cors"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "office-addin-dev-certs": "^1.13.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "allowCustomDataForDataTypeAny": false,
+  "functions": [
+    {
+      "id": "VALUE",
+      "name": "VALUE",
+      "description": "A financial value from BOE Analytics: =BOE.VALUE(\"AAPL\",\"revenue\",2024,\"FY\")",
+      "result": { "type": "number" },
+      "parameters": [
+        { "name": "ticker", "description": "Ticker symbol, e.g. AAPL", "type": "string" },
+        { "name": "concept", "description": "Canonical concept, e.g. revenue, net_income", "type": "string" },
+        { "name": "year", "description": "Fiscal year, e.g. 2024", "type": "number" },
+        { "name": "period", "description": "FY (default), Q1, Q2, Q3 or Q4", "type": "string", "optional": true }
+      ]
+    }
+  ]
+}

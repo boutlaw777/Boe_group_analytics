@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "C:\\Cursor Projects\\PDR\\backend\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "finclone.api.main:app", "--port", "8000"],
+      "cwd": "C:\\Cursor Projects\\PDR\\backend",
+      "port": 8000
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "C:\\Cursor Projects\\PDR\\web",
+      "port": 3000
+    }
+  ]
+}

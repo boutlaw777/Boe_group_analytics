@@ -1,0 +1,18 @@
+# Dependencies & environments
+node_modules/
+.venv/
+
+# Secrets — real keys live only in backend/.env (see backend/.env.example)
+.env
+.env.local
+
+# Build output & caches
+.next/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Local databases
+*.db
+.claude/settings.local.json

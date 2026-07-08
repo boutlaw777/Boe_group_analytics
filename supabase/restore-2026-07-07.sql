@@ -14,6 +14,12 @@
 alter table if exists companies rename to companies_backup_20260707;
 alter table if exists api_keys  rename to api_keys_backup_20260707;
 
+-- Rename indexes of the backup tables to prevent name conflicts
+alter index if exists idx_companies_ticker rename to idx_companies_backup_20260707_ticker;
+alter index if exists idx_companies_sector rename to idx_companies_backup_20260707_sector;
+alter index if exists idx_api_keys_key rename to idx_api_keys_backup_20260707_key;
+
+
 -- 2. Recreate `companies` (as in schema.sql)
 create table companies (
   id          uuid primary key default gen_random_uuid(),

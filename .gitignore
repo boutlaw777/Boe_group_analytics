@@ -16,3 +16,7 @@ __pycache__/
 # Local databases
 *.db
 .claude/settings.local.json
+
+# Build artifacts & run logs
+*.tsbuildinfo
+pipeline_run.log

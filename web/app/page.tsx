@@ -20,16 +20,36 @@ const MODULES = [
     href: "/scout",
     cta: "Run a screen",
   },
+  {
+    title: "Templates",
+    text: "Define your own model layout — custom row order and calculated lines like Adjusted EBITDA — save it once, and every data sheet you download applies it automatically.",
+    href: "/templates",
+    cta: "Build a template",
+  },
+  {
+    title: "Developer API",
+    text: "The same validated fundamentals as clean JSON: REST endpoints with an SEC audit URL on every value, keyed access, and tier-based rate limits.",
+    href: "/developers",
+    cta: "Read the API docs",
+  },
+  {
+    title: "Point-in-Time Values",
+    text: "Every period keeps both the originally-reported and the restated figure. Query latest, original, or every vintage — so backtests see what the market saw at the time.",
+    href: "/developers",
+    cta: "See how it works",
+  },
 ];
 
-const AUDIENCES = [
+const AUDIENCES: { title: string; text: string; href?: string; cta?: string }[] = [
   {
     title: "For analysts",
     text: "Stop re-keying filings. Open a company, download the model, and verify any number against its source in one click.",
   },
   {
-    title: "For developers (coming soon)",
+    title: "For developers",
     text: "A REST API with audit URLs on every value. Feed clean, validated fundamentals into your own systems and backtests.",
+    href: "/developers",
+    cta: "Read the API docs",
   },
   {
     title: "For teams",
@@ -63,7 +83,7 @@ export default async function Landing() {
     <>
       {/* Announcement bar */}
       <div className="announce">
-        Data Sheets, Excel Add-in, Scout, and Templates are live — Developer API coming soon.{" "}
+        Data Sheets, Excel Add-in, Scout, Templates, and the Developer API.{" "}
         <Link href="/dashboard">Take a look</Link>
       </div>
 
@@ -162,6 +182,7 @@ export default async function Landing() {
             <div key={a.title} className="card feature-card">
               <h3>{a.title}</h3>
               <p className="muted">{a.text}</p>
+              {a.href && a.cta && <Link href={a.href}>{a.cta} →</Link>}
             </div>
           ))}
         </div>

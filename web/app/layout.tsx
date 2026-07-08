@@ -44,7 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
             <div>
               <h4>Developers</h4>
-              <span style={{ color: "#8aa5bd" }}>API documentation (coming soon)</span>
+              <Link href="/developers">API documentation</Link>
               <a href="https://www.sec.gov/edgar" target="_blank" rel="noreferrer">SEC EDGAR</a>
             </div>
             <div>

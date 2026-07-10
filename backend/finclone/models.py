@@ -93,6 +93,41 @@ class ApiKey(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     requests: Mapped[int] = mapped_column(default=0)  # lifetime usage counter
     created: Mapped[date] = mapped_column(Date)
+    # Set for self-serve portal keys; admin-minted keys have no owner account.
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dev_accounts.id"), index=True)
+
+
+class DevAccount(Base):
+    """Self-serve developer account (portal signup/login).
+
+    Passwords are scrypt-hashed (stdlib, no extra deps). A login issues an
+    opaque bearer token whose SHA-256 hash is stored here — one active
+    session per account; logging in again rotates it.
+    """
+
+    __tablename__ = "dev_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    token_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    token_expires: Mapped[date | None] = mapped_column(Date)
+    created: Mapped[date] = mapped_column(Date)
+
+
+class ApiKeyUsage(Base):
+    """Per-day request count per key — feeds the portal's usage graphs."""
+
+    __tablename__ = "api_key_usage"
+    __table_args__ = (
+        UniqueConstraint("key_id", "day", name="uq_key_usage_day"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    day: Mapped[date] = mapped_column(Date)
+    count: Mapped[int] = mapped_column(default=0)
 
 
 class ValidationFlag(Base):

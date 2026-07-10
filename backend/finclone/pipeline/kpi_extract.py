@@ -8,7 +8,12 @@ the verbatim quote it came from so a human reviewer can verify it against the
 filing.
 
 Usage: python -m finclone.pipeline.kpi_extract AAPL [MSFT ...]
+       python -m finclone.pipeline.kpi_extract --all [--limit N]
        (requires DEEPSEEK_API_KEY in .env, and the ticker already ingested)
+
+--all sweeps every SEC-extracted company that has no KPIs yet. Each company
+costs LLM tokens (up to KPI_MAX_CHUNKS chunks of filing text), so the sweep
+is resumable and skips already-covered companies on re-run.
 """
 
 import json
@@ -210,10 +215,18 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
 
 
 def main() -> None:
-    tickers = sys.argv[1:]
-    if not tickers:
-        print("Usage: python -m finclone.pipeline.kpi_extract TICKER [TICKER ...]")
-        raise SystemExit(1)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="LLM extraction of niche KPIs from filing prose")
+    parser.add_argument("tickers", nargs="*", help="tickers to extract")
+    parser.add_argument("--all", action="store_true",
+                        help="every SEC-extracted company that has no KPIs yet "
+                             "(costs LLM tokens per company)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="with --all: stop after this many companies")
+    args = parser.parse_args()
+    if not args.tickers and not args.all:
+        parser.error("pass tickers or --all")
     if not DEEPSEEK_API_KEY:
         raise SystemExit(
             "DEEPSEEK_API_KEY is not set. Add this line to backend\\.env:\n"
@@ -223,10 +236,43 @@ def main() -> None:
               if len(DEEPSEEK_API_KEY) > 12 else "(too short — check .env)")
     print(f"LLM provider: {DEEPSEEK_BASE_URL} | model: {KPI_MODEL} | key: {masked}")
     init_db()
+
+    tickers = [t.upper() for t in args.tickers]
+    if args.all:
+        from finclone.models import FinancialFact
+
+        with get_session() as session:
+            sec_ids = set(session.scalars(
+                select(FinancialFact.company_id)
+                .where(FinancialFact.accession_number != "simfin-baseline")
+                .distinct()
+            ))
+            has_kpis = set(session.scalars(select(KpiFact.company_id).distinct()))
+            tickers += [c.ticker
+                        for c in session.scalars(select(Company).order_by(Company.ticker))
+                        if c.id in sec_ids and c.id not in has_kpis
+                        and c.ticker not in tickers]
+        if args.limit:
+            tickers = tickers[:args.limit]
+        print(f"Extracting KPIs for {len(tickers)} SEC-extracted companies without KPIs...")
+
     client = EdgarClient()
     llm = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-    for ticker in tickers:
-        extract_ticker(ticker, client, llm)
+    failed = 0
+    for i, ticker in enumerate(tickers, start=1):
+        try:
+            extract_ticker(ticker, client, llm)
+        except KeyboardInterrupt:
+            print(f"\nStopped at {ticker} ({i - 1}/{len(tickers)} done) — "
+                  "re-run to resume; --all skips companies that already have KPIs.")
+            return
+        except Exception as e:  # one bad filing must not stop the sweep
+            failed += 1
+            print(f"{ticker}: KPI extraction failed ({type(e).__name__}: {str(e)[:120]})")
+        if args.all and i % 25 == 0:
+            print(f"--- {i}/{len(tickers)} ({failed} failed) ---")
+    if args.all:
+        print(f"Done: {len(tickers)} companies processed, {failed} failed.")
 
 
 if __name__ == "__main__":

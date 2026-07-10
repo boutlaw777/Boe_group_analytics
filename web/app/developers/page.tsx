@@ -45,7 +45,14 @@ export default function DevelopersPage() {
           The same validated fundamentals that power this site, as clean JSON —
           with the SEC audit URL on every number. Interactive Swagger docs are
           served by the API itself at{" "}
-          <span style={mono}>{"{API_BASE}"}/docs</span>.
+          <a href={`${API_BASE}/docs`} target="_blank" rel="noreferrer" style={mono}>
+            {API_BASE}/docs
+          </a>.
+        </p>
+        <p>
+          <Link href="/developers/portal" className="btn hero-btn">
+            Sign in / create a free API key
+          </Link>
         </p>
       </section>
 
@@ -108,16 +115,18 @@ export default function DevelopersPage() {
         <div>
           <h2>Authentication</h2>
           <p className="muted" style={{ lineHeight: 1.6 }}>
-            Pass your key in the <span style={mono}>X-API-Key</span> header.
-            Plain download links (data sheets, bulk zips) can use{" "}
-            <span style={mono}>?api_key=</span> instead, since links can&apos;t
-            carry headers. Keys are hashed at rest and can be revoked at any
-            time; a revoked or unknown key gets <span style={mono}>401</span>.
+            Pass your key in the <span style={mono}>X-API-Key</span> header —
+            all JSON endpoints require one. Data-sheet downloads (single and
+            bulk) are public, since download links can&apos;t carry headers.
+            Keys are hashed at rest and can be revoked at any time; a missing,
+            revoked, or unknown key gets <span style={mono}>401</span>.
           </p>
           <p className="muted" style={{ lineHeight: 1.6 }}>
-            To get a key, <a href="mailto:mohsin@boegroup.com">contact us</a> —
-            keys are provisioned per organization with the tier that fits your
-            volume.
+            Get a free-tier key instantly in the{" "}
+            <Link href="/developers/portal">developer portal</Link> — sign up,
+            mint up to two keys, and track your usage. For pro or enterprise
+            volume, email{" "}
+            <a href="mailto:mohsin@boegroup.com" style={mono}>mohsin@boegroup.com</a>.
           </p>
         </div>
         <div>
@@ -155,7 +164,9 @@ export default function DevelopersPage() {
           time.
         </p>
         <p style={{ marginTop: 18 }}>
-          <a href="mailto:mohsin@boegroup.com" className="btn hero-btn">Request an API key</a>{" "}
+          <Link href="/developers/portal" className="btn hero-btn">
+            Create a free API key
+          </Link>{" "}
           <Link href="/dashboard" className="btn secondary hero-btn">Browse coverage</Link>
         </p>
       </section>

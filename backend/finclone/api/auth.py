@@ -11,6 +11,7 @@ FINCLONE_ADMIN_TOKEN to enable the /admin/keys management endpoints.
 """
 
 import hashlib
+import hmac
 import os
 import secrets
 import time
@@ -39,6 +40,28 @@ def generate_key() -> str:
 
 def hash_key(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+# --- Developer-portal passwords & sessions (stdlib scrypt, no extra deps) ---
+
+def hash_password(raw: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.scrypt(raw.encode(), salt=salt, n=2 ** 14, r=8, p=1)
+    return salt.hex() + "$" + digest.hex()
+
+
+def verify_password(raw: str, stored: str) -> bool:
+    try:
+        salt_hex, digest_hex = stored.split("$", 1)
+        digest = hashlib.scrypt(raw.encode(), salt=bytes.fromhex(salt_hex),
+                                n=2 ** 14, r=8, p=1)
+        return hmac.compare_digest(digest.hex(), digest_hex)
+    except (ValueError, TypeError):
+        return False
+
+
+def generate_session_token() -> str:
+    return "boes_" + secrets.token_urlsafe(32)
 
 
 class RateLimiter:

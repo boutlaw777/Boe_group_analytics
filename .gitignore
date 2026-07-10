@@ -20,3 +20,4 @@ __pycache__/
 # Build artifacts & run logs
 *.tsbuildinfo
 pipeline_run.log
+*.bak

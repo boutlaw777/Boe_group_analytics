@@ -21,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Link href="/scout" style={{ color: "#cfe0ef" }}>Scout</Link>
           <Link href="/watchlist" style={{ color: "#cfe0ef" }}>Watchlist</Link>
           <Link href="/templates" style={{ color: "#cfe0ef" }}>Templates</Link>
+          <Link href="/developers" style={{ color: "#cfe0ef" }}>Developers</Link>
           <span className="tag">Speed to Conviction</span>
         </div>
         <main>{children}</main>
@@ -45,6 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div>
               <h4>Developers</h4>
               <Link href="/developers">API documentation</Link>
+              <Link href="/developers/portal">Developer portal — API keys</Link>
               <a href="https://www.sec.gov/edgar" target="_blank" rel="noreferrer">SEC EDGAR</a>
             </div>
             <div>

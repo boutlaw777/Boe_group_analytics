@@ -100,7 +100,8 @@ export default async function Landing() {
           was reported on. No black boxes between you and the source.
         </p>
         <p>
-          <Link href="/dashboard" className="btn hero-btn">Open the dashboard</Link>
+          <Link href="/dashboard" className="btn hero-btn">Open the dashboard</Link>{" "}
+          <Link href="/developers" className="btn secondary hero-btn">Developer API</Link>
         </p>
         <div className="stats-row">
           <div className="stat">

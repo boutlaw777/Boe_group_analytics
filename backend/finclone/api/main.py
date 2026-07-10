@@ -18,12 +18,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from finclone.api import auth as api_auth
+from finclone.api import portal
 from finclone.db import get_session, init_db
-from finclone.models import ApiKey, Company, FinancialFact, KpiFact, SheetTemplate, ValidationFlag
+from finclone.models import (ApiKey, ApiKeyUsage, Company, FinancialFact, KpiFact,
+                             SheetTemplate, ValidationFlag)
 from finclone.pipeline.ingest import current_facts
 
 # Paths served without an API key even when enforcement is on
-_PUBLIC_PATHS = ("/", "/health", "/docs", "/openapi.json", "/redoc", "/admin")
+# (/auth and /me are the developer portal — they use their own bearer tokens)
+_PUBLIC_PATHS = ("/", "/health", "/docs", "/openapi.json", "/redoc", "/admin",
+                 "/auth", "/me")
 
 
 async def require_api_key(
@@ -38,9 +42,25 @@ async def require_api_key(
     a fallback.
     """
     if not api_auth.require_enabled():
+        # Open mode still counts usage for a key that's voluntarily presented,
+        # so the portal's graphs work in local/dev deployments too.
+        if x_api_key:
+            _count_key_usage(x_api_key)
         return
+    # Behind a prefix-stripping proxy (uvicorn --root-path /api), the ASGI
+    # path still includes the prefix — strip it so path checks match the
+    # app's own routes in every deployment.
     path = request.url.path
+    root = request.scope.get("root_path", "")
+    if root and path.startswith(root):
+        path = path[len(root):] or "/"
     if path == "/" or any(path.startswith(p) and p != "/" for p in _PUBLIC_PATHS):
+        return
+    # Data-sheet downloads stay public even under enforcement: the website's
+    # download buttons are plain browser links, which can't carry a key
+    # without exposing it to every visitor.
+    if path.startswith("/datasheets") or (
+            path.startswith("/companies/") and path.endswith("/datasheet")):
         return
     if not x_api_key:
         x_api_key = request.query_params.get("api_key")
@@ -56,7 +76,33 @@ async def require_api_key(
             raise HTTPException(
                 429, f"Rate limit exceeded for tier '{key.tier}' — retry in {retry_in:.0f}s")
         key.requests += 1
+        _record_usage(session, key.id)
         session.commit()
+    finally:
+        session.close()
+
+
+def _record_usage(session: Session, key_id: int) -> None:
+    """Daily usage row for the portal graphs (single worker, so the
+    read-then-write is race-free enough at this scale)."""
+    today = _date.today()
+    usage = session.scalar(select(ApiKeyUsage).where(
+        ApiKeyUsage.key_id == key_id, ApiKeyUsage.day == today))
+    if usage is None:
+        session.add(ApiKeyUsage(key_id=key_id, day=today, count=1))
+    else:
+        usage.count += 1
+
+
+def _count_key_usage(raw_key: str) -> None:
+    """Best-effort usage counting when enforcement is off."""
+    session = get_session()
+    try:
+        key = session.scalar(select(ApiKey).where(ApiKey.key_hash == api_auth.hash_key(raw_key)))
+        if key is not None and key.active:
+            key.requests += 1
+            _record_usage(session, key.id)
+            session.commit()
     finally:
         session.close()
 
@@ -102,6 +148,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Self-serve developer portal: /auth/*, /me/* (bearer-token authenticated)
+app.include_router(portal.router)
 
 
 @app.on_event("startup")

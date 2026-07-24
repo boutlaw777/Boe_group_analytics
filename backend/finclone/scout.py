@@ -13,7 +13,7 @@ from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from finclone.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, KPI_MODEL
+from finclone.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, SCOUT_MODEL
 from finclone.models import Company, KpiFact, ScreenMetrics
 from finclone.pipeline.crossref import _our_annual_values
 
@@ -137,7 +137,7 @@ def passes_filters(metrics: dict[str, float], filters: list[dict]) -> bool:
 
 
 def translate_query(query: str, sectors: list[str]) -> dict:
-    print(f"[scout] query: {query!r} — asking {KPI_MODEL} to translate...")
+    print(f"[scout] query: {query!r} — asking {SCOUT_MODEL} to translate...")
     started = time.monotonic()
     # Default SDK timeout is 600s x 2 retries — a network blip would pin a
     # server thread for many minutes. Translation normally takes ~2s.
@@ -146,7 +146,7 @@ def translate_query(query: str, sectors: list[str]) -> dict:
     system = _SYSTEM_TEMPLATE.format(metrics=", ".join(METRIC_NAMES),
                                      sectors=", ".join(sectors) or "(none)")
     response = llm.chat.completions.create(
-        model=KPI_MODEL,
+        model=SCOUT_MODEL,
         max_tokens=1024,
         response_format={"type": "json_object"},
         messages=[

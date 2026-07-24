@@ -17,18 +17,23 @@ is resumable and skips already-covered companies on re-run.
 """
 
 import json
-import sys
+import time
 from datetime import date
 
 import openai
 from openai import OpenAI
 from sqlalchemy import select
 
-from finclone.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, KPI_MAX_CHUNKS, KPI_MODEL
+from finclone.config import KPI_API_KEY, KPI_BASE_URL, KPI_MAX_CHUNKS, KPI_MODEL
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, inline_viewer_url, latest_filing
 from finclone.models import Company, KpiFact
+
+
+class _RateLimited(Exception):
+    """The LLM provider's quota is exhausted — stop the sweep so a supervisor
+    can resume it after the quota window (per-minute or per-day) resets."""
 from finclone.taxonomy.kpi_definitions import kpis_for_sector
 
 _CHUNK_SIZE = 15_000  # characters
@@ -167,20 +172,28 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
     found: dict[tuple[str, str], dict] = {}
     for i, chunk in enumerate(chunks, 1):
         print(f"  analyzing section {i}/{len(chunks)}...")
-        try:
-            for kpi in _extract_from_chunk(llm, labels, chunk):
-                key = (kpi["name"].lower(), kpi["period"].lower())
-                found.setdefault(key, kpi)
-        except openai.RateLimitError:
-            print("  rate limited — stopping early with results so far")
-            break
-        except openai.APIStatusError as e:
-            if e.status_code == 402:
-                print("  DeepSeek account has insufficient balance — top up at "
-                      "https://platform.deepseek.com (Billing). Stopping.")
+        for attempt in range(4):
+            try:
+                for kpi in _extract_from_chunk(llm, labels, chunk):
+                    key = (kpi["name"].lower(), kpi["period"].lower())
+                    found.setdefault(key, kpi)
                 break
-            print(f"  API error {e.status_code} on section {i}: {e.message}")
-            continue
+            except openai.RateLimitError:
+                # Gemini free tier meters per-minute; back off and retry the
+                # same chunk rather than losing it. Only give up after 4 tries.
+                if attempt < 3:
+                    wait = 20 * (attempt + 1)
+                    print(f"  rate limited — waiting {wait}s (retry {attempt + 1}/3)")
+                    time.sleep(wait)
+                    continue
+                print("  still rate limited after retries — stopping early")
+                raise _RateLimited()
+            except openai.APIStatusError as e:
+                if e.status_code == 402:
+                    print("  LLM account has insufficient balance — stopping.")
+                    raise _RateLimited()
+                print(f"  API error {e.status_code} on section {i}: {e.message}")
+                break
 
     source_url = inline_viewer_url(cik, filing["accession_number"], filing["primary_document"])
     inserted = 0
@@ -227,14 +240,14 @@ def main() -> None:
     args = parser.parse_args()
     if not args.tickers and not args.all:
         parser.error("pass tickers or --all")
-    if not DEEPSEEK_API_KEY:
+    if not KPI_API_KEY:
         raise SystemExit(
-            "DEEPSEEK_API_KEY is not set. Add this line to backend\\.env:\n"
-            "  DEEPSEEK_API_KEY=sk-your-key-here"
+            "No KPI LLM key set. Add GEMINI_API_KEY (free tier) or "
+            "DEEPSEEK_API_KEY to backend\\.env"
         )
-    masked = (f"{DEEPSEEK_API_KEY[:8]}...{DEEPSEEK_API_KEY[-4:]}"
-              if len(DEEPSEEK_API_KEY) > 12 else "(too short — check .env)")
-    print(f"LLM provider: {DEEPSEEK_BASE_URL} | model: {KPI_MODEL} | key: {masked}")
+    masked = (f"{KPI_API_KEY[:6]}...{KPI_API_KEY[-4:]}"
+              if len(KPI_API_KEY) > 12 else "(too short — check .env)")
+    print(f"KPI LLM provider: {KPI_BASE_URL} | model: {KPI_MODEL} | key: {masked}")
     init_db()
 
     tickers = [t.upper() for t in args.tickers]
@@ -257,7 +270,7 @@ def main() -> None:
         print(f"Extracting KPIs for {len(tickers)} SEC-extracted companies without KPIs...")
 
     client = EdgarClient()
-    llm = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+    llm = OpenAI(api_key=KPI_API_KEY, base_url=KPI_BASE_URL, timeout=60, max_retries=1)
     failed = 0
     for i, ticker in enumerate(tickers, start=1):
         try:
@@ -266,6 +279,14 @@ def main() -> None:
             print(f"\nStopped at {ticker} ({i - 1}/{len(tickers)} done) — "
                   "re-run to resume; --all skips companies that already have KPIs.")
             return
+        except _RateLimited:
+            # Provider quota exhausted (per-minute burst survived retries, or
+            # daily cap). Stop non-zero so the supervisor resumes after reset;
+            # --all skips the companies already done this run.
+            print(f"LLM quota exhausted at {ticker} "
+                  f"({i - 1}/{len(tickers)} processed this run) — "
+                  "stopping; re-run after the quota resets.")
+            raise SystemExit(3)
         except Exception as e:  # one bad filing must not stop the sweep
             failed += 1
             print(f"{ticker}: KPI extraction failed ({type(e).__name__}: {str(e)[:120]})")

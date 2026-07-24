@@ -130,6 +130,20 @@ class ApiKeyUsage(Base):
     count: Mapped[int] = mapped_column(default=0)
 
 
+class CrossrefCheck(Base):
+    """When a company was last cross-referenced against SimFin.
+
+    The --all sweep skips recently-checked companies so it advances through the
+    universe across SimFin's daily-quota windows instead of restarting from A
+    each run (a company with zero variance produces no ValidationFlag, so flags
+    alone can't distinguish 'checked and clean' from 'never checked')."""
+
+    __tablename__ = "crossref_checks"
+
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), primary_key=True)
+    checked: Mapped[date] = mapped_column(Date)
+
+
 class ValidationFlag(Base):
     """A value whose SEC-extracted number disagrees with the reference source
     (SimFin) by more than the variance threshold — queued for human review (PDR §3)."""

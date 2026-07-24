@@ -75,9 +75,14 @@ async def require_api_key(
         if retry_in is not None:
             raise HTTPException(
                 429, f"Rate limit exceeded for tier '{key.tier}' — retry in {retry_in:.0f}s")
-        key.requests += 1
-        _record_usage(session, key.id)
-        session.commit()
+        try:
+            key.requests += 1
+            _record_usage(session, key.id)
+            session.commit()
+        except Exception:
+            # Usage counters are best-effort — a read-only database (e.g.
+            # Supabase quota enforcement) must never break authentication.
+            session.rollback()
     finally:
         session.close()
 
@@ -103,6 +108,8 @@ def _count_key_usage(raw_key: str) -> None:
             key.requests += 1
             _record_usage(session, key.id)
             session.commit()
+    except Exception:
+        session.rollback()
     finally:
         session.close()
 

@@ -20,14 +20,20 @@ comparison would always trivially match while spending an API call each.
 
 import argparse
 import time
+from datetime import date, timedelta
 
 import httpx
 from sqlalchemy import delete, select
 
 from finclone.config import CROSSREF_VARIANCE_THRESHOLD, SIMFIN_API_KEY
 from finclone.db import get_session, init_db
-from finclone.models import Company, FinancialFact, ValidationFlag
+from finclone.models import Company, CrossrefCheck, FinancialFact, ValidationFlag
 from finclone.pipeline.ingest import current_facts
+
+# --all re-validates a company at most once per this window, so the sweep
+# advances through the universe across SimFin's daily quota instead of
+# restarting from A each run.
+_RECHECK_DAYS = 14
 
 _SIMFIN_BASE = "https://backend.simfin.com/api/v3"
 
@@ -161,6 +167,17 @@ def _our_annual_values(company_id: int) -> dict[tuple[str, int], float]:
     return {key: f.value for key, f in _our_annual_facts(company_id).items()}
 
 
+def _mark_checked(company_id: int) -> None:
+    """Record that this company was cross-referenced today (upsert)."""
+    with get_session() as session:
+        row = session.get(CrossrefCheck, company_id)
+        if row is None:
+            session.add(CrossrefCheck(company_id=company_id, checked=date.today()))
+        else:
+            row.checked = date.today()
+        session.commit()
+
+
 def crossref_ticker(ticker: str) -> None:
     with get_session() as session:
         company = session.scalar(select(Company).where(Company.ticker == ticker.upper()))
@@ -168,7 +185,10 @@ def crossref_ticker(ticker: str) -> None:
         print(f"{ticker.upper()}: not ingested — skipping")
         return
 
+    # SimFin call first — a 429 here raises before we mark the company checked,
+    # so a quota-blocked company is retried next run rather than skipped.
     reference = fetch_reference_values(ticker)
+    _mark_checked(company.id)
     # Align on the period end's calendar year — SimFin's fiscal-year labels
     # run one behind the company's own for January-ending years (NVDA).
     ours = {(concept, f.end_date.year): (fy, f.value)
@@ -227,24 +247,53 @@ def main() -> None:
                 .where(FinancialFact.accession_number != "simfin-baseline")
                 .distinct()
             ))
-            tickers += [c.ticker
-                        for c in session.scalars(select(Company).order_by(Company.ticker))
-                        if c.id in sec_ids and c.ticker not in tickers]
+            cutoff = date.today() - timedelta(days=_RECHECK_DAYS)
+            recent = set(session.scalars(
+                select(CrossrefCheck.company_id).where(CrossrefCheck.checked >= cutoff)))
+            todo = [c.ticker
+                    for c in session.scalars(select(Company).order_by(Company.ticker))
+                    if c.id in sec_ids and c.id not in recent and c.ticker not in tickers]
+            tickers += todo
         if args.limit:
             tickers = tickers[:args.limit]
-        print(f"Cross-referencing {len(tickers)} companies with SEC-extracted facts...")
+        print(f"Cross-referencing {len(tickers)} companies not checked in the "
+              f"last {_RECHECK_DAYS} days ({len(recent)} already current)...")
 
     failed = 0
+    consecutive_429 = 0
     for i, ticker in enumerate(tickers, start=1):
         for attempt in range(3):
             try:
                 crossref_ticker(ticker)
+                consecutive_429 = 0
                 break
             except KeyboardInterrupt:
                 print(f"\nStopped at {ticker} ({i - 1}/{len(tickers)} done) — "
                       "re-running refreshes each company's flags wholesale, so a "
                       "restart is safe.")
                 return
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < 2:
+                    # burst limit: back off and retry the same ticker
+                    time.sleep(30 * (attempt + 1))
+                    continue
+                failed += 1
+                if e.response.status_code == 429:
+                    consecutive_429 += 1
+                    print(f"{ticker}: crossref failed (SimFin 429 rate limit)")
+                    if consecutive_429 >= 5:
+                        # backoff didn't help across 5 straight tickers: the
+                        # DAILY quota is gone, not the per-second burst limit.
+                        # Stop instead of churning the rest of the list into
+                        # failures; the supervisor re-runs after quota reset.
+                        print(f"SimFin daily quota exhausted "
+                              f"({i}/{len(tickers)} processed, {failed} failed) — "
+                              "stopping; re-run after the quota resets.")
+                        raise SystemExit(3)
+                else:
+                    consecutive_429 = 0
+                    print(f"{ticker}: crossref failed (HTTP {e.response.status_code})")
+                break
             except httpx.TransportError as e:  # flaky DNS/connect — retry
                 if attempt == 2:
                     failed += 1
@@ -253,6 +302,7 @@ def main() -> None:
                     time.sleep(2 * (attempt + 1))
             except Exception as e:  # one SimFin miss must not stop the sweep
                 failed += 1
+                consecutive_429 = 0
                 print(f"{ticker}: crossref failed ({type(e).__name__}: {str(e)[:120]})")
                 break
         if args.all:

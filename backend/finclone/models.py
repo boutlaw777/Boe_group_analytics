@@ -116,6 +116,30 @@ class DevAccount(Base):
     created: Mapped[date] = mapped_column(Date)
 
 
+class Subscription(Base):
+    """A dev account's paid plan, mirrored from Stripe (PDR Module 5 billing).
+
+    Stripe is the source of truth; this table caches the current state so the
+    API can gate tiers without a Stripe round-trip on every request. Webhooks
+    keep it in sync. One row per account (created on first checkout). A separate
+    table (not columns on dev_accounts) so create_all provisions it without an
+    ALTER on the existing accounts table. `tier` mirrors ApiKey.tier values
+    (free/pro/enterprise); on an active paid sub the account's keys are set to
+    that tier, and reverted to free when the sub lapses."""
+
+    __tablename__ = "subscriptions"
+
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("dev_accounts.id"), primary_key=True)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    tier: Mapped[str] = mapped_column(String(16), default="free")
+    # Stripe subscription status: active, trialing, past_due, canceled, ...
+    status: Mapped[str] = mapped_column(String(24), default="inactive")
+    current_period_end: Mapped[date | None] = mapped_column(Date)
+    updated: Mapped[date] = mapped_column(Date)
+
+
 class ApiKeyUsage(Base):
     """Per-day request count per key — feeds the portal's usage graphs."""
 

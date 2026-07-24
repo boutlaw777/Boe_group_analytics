@@ -44,3 +44,26 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
 ARCHIVE_BUCKET = os.environ.get("FINCLONE_ARCHIVE_BUCKET", "filings")
 CROSSREF_VARIANCE_THRESHOLD = float(os.environ.get("FINCLONE_VARIANCE_THRESHOLD", "0.01"))
+
+# Stripe billing (PDR Module 5). Self-serve tier upgrades replace the previous
+# admin-provisioned pro/enterprise keys. All optional — when STRIPE_SECRET_KEY
+# is unset the /billing endpoints report "not configured" (503) and the rest of
+# the API is unaffected, so the app runs fine before Stripe is wired up.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+# Stripe Price IDs for each paid tier (create these in the Stripe dashboard).
+STRIPE_PRICE_PRO = os.environ.get("STRIPE_PRICE_PRO", "")
+STRIPE_PRICE_ENTERPRISE = os.environ.get("STRIPE_PRICE_ENTERPRISE", "")
+# Where Stripe returns the user after checkout / billing-portal (your web app).
+BILLING_SUCCESS_URL = os.environ.get(
+    "FINCLONE_BILLING_SUCCESS_URL", "http://localhost:3000/account?checkout=success")
+BILLING_CANCEL_URL = os.environ.get(
+    "FINCLONE_BILLING_CANCEL_URL", "http://localhost:3000/account?checkout=cancel")
+
+# Maps our tier name -> Stripe Price ID, and back. The webhook resolves an
+# incoming Price ID to a tier; checkout resolves a tier to a Price ID.
+STRIPE_PRICE_BY_TIER = {
+    tier: price for tier, price in
+    (("pro", STRIPE_PRICE_PRO), ("enterprise", STRIPE_PRICE_ENTERPRISE)) if price
+}
+TIER_BY_STRIPE_PRICE = {price: tier for tier, price in STRIPE_PRICE_BY_TIER.items()}

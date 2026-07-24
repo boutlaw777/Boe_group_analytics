@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from finclone.api import auth as api_auth
-from finclone.api import portal
+from finclone.api import billing, portal
 from finclone.db import get_session, init_db
 from finclone.models import (ApiKey, ApiKeyUsage, Company, FinancialFact, KpiFact,
                              SheetTemplate, ValidationFlag)
@@ -27,7 +27,7 @@ from finclone.pipeline.ingest import current_facts
 # Paths served without an API key even when enforcement is on
 # (/auth and /me are the developer portal — they use their own bearer tokens)
 _PUBLIC_PATHS = ("/", "/health", "/docs", "/openapi.json", "/redoc", "/admin",
-                 "/auth", "/me")
+                 "/auth", "/me", "/billing")
 
 
 async def require_api_key(
@@ -158,6 +158,10 @@ app.add_middleware(
 
 # Self-serve developer portal: /auth/*, /me/* (bearer-token authenticated)
 app.include_router(portal.router)
+
+# Stripe billing: /billing/* (checkout & portal use the portal bearer token;
+# the webhook is signature-verified — none use the X-API-Key data gate)
+app.include_router(billing.router)
 
 
 @app.on_event("startup")

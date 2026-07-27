@@ -16,6 +16,11 @@ interface UsagePoint {
   date: string;
   requests: number;
 }
+interface Subscription {
+  tier: string;
+  status: string;
+  current_period_end: string | null;
+}
 
 /** Daily requests, single series: thin bars, one hue, hover tooltip, no legend. */
 function UsageChart({ points }: { points: UsagePoint[] }) {
@@ -100,6 +105,7 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [freshKey, setFreshKey] = useState<{ name: string; api_key: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [sub, setSub] = useState<Subscription | null>(null);
 
   useEffect(() => {
     setToken(localStorage.getItem(TOKEN_KEY));
@@ -132,6 +138,13 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
     setMe(meData);
     setKeys(keyData);
     setUsage(usageData);
+    // Billing is optional — tolerate the route being unconfigured or not yet
+    // deployed (returns free/inactive or 404) without breaking the portal.
+    try {
+      setSub(await authed("/billing/subscription"));
+    } catch {
+      setSub(null);
+    }
   }, [authed]);
 
   useEffect(() => {
@@ -176,6 +189,29 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
     }
   }
 
+  async function startCheckout(tier: string) {
+    setError("");
+    try {
+      const { checkout_url } = await authed("/billing/checkout", {
+        method: "POST",
+        body: JSON.stringify({ tier }),
+      });
+      window.location.href = checkout_url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function openPortal() {
+    setError("");
+    try {
+      const { portal_url } = await authed("/billing/portal", { method: "POST" });
+      window.location.href = portal_url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function revokeKey(id: number) {
     setError("");
     try {
@@ -193,6 +229,7 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
     setKeys([]);
     setUsage([]);
     setFreshKey(null);
+    setSub(null);
   }
 
   if (!ready) return null;
@@ -252,6 +289,36 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
           </div>
         </div>
       )}
+
+      <div className="card" style={{ padding: 20, marginBottom: 18 }}>
+        <h3 style={{ marginTop: 0, color: "var(--navy)" }}>Plan &amp; billing</h3>
+        <p className="muted" style={{ marginBottom: 14 }}>
+          Current plan:{" "}
+          <b style={{ color: "var(--text)", textTransform: "capitalize" }}>{sub?.tier ?? "free"}</b>
+          {sub && sub.status !== "inactive" && (
+            <>
+              {" · "}
+              <span style={{ textTransform: "capitalize" }}>{sub.status}</span>
+              {sub.current_period_end ? ` · renews ${sub.current_period_end}` : ""}
+            </>
+          )}
+        </p>
+        {!sub || sub.tier === "free" || sub.status !== "active" ? (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn" onClick={() => startCheckout("pro")}>
+              Upgrade to Pro — 600 req/min
+            </button>
+            <button className="btn secondary" onClick={() => startCheckout("enterprise")}>
+              Upgrade to Enterprise — 6,000 req/min
+            </button>
+          </div>
+        ) : (
+          <button className="btn secondary" onClick={openPortal}>Manage billing</button>
+        )}
+        <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>
+          Upgrading raises the rate limit on all your keys. Billed securely via Stripe; cancel anytime.
+        </p>
+      </div>
 
       <div className="card" style={{ padding: 20, marginBottom: 18 }}>
         <h3 style={{ marginTop: 0, color: "var(--navy)" }}>Your API keys</h3>

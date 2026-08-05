@@ -71,6 +71,33 @@ _SIMFIN_FIELD_MAP: dict[str, dict[str, str]] = {
 }
 
 
+#: The triage fields carried across a flag refresh, and their reset values.
+_UNTRIAGED: dict[str, object] = {
+    "resolution": None, "reason": None, "resolved_by": None,
+    "reviewed": False, "resolved": False,
+}
+
+
+def preserved_triage(prior: tuple | None, our_value: float,
+                     reference_value: float) -> dict:
+    """Triage fields for a refreshed flag: carried forward when the underlying
+    numbers are unchanged, reset when they moved.
+
+    `prior` is the snapshot tuple built in crossref_ticker:
+    (our_value, reference_value, resolution, reason, resolved_by, reviewed, resolved).
+
+    A moved value means the disagreement itself changed, so an old verdict no
+    longer describes it — resetting forces re-examination rather than carrying a
+    stale explanation the numbers no longer support.
+    """
+    if prior is None:
+        return dict(_UNTRIAGED)
+    if prior[0] != our_value or prior[1] != reference_value:
+        return dict(_UNTRIAGED)
+    return {"resolution": prior[2], "reason": prior[3], "resolved_by": prior[4],
+            "reviewed": prior[5], "resolved": prior[6]}
+
+
 def variance(ours: float, reference: float) -> float:
     """Relative difference of absolute magnitudes; sign conventions differ
     between sources. Returns 0 when both are 0."""
@@ -206,15 +233,30 @@ def crossref_ticker(ticker: str) -> None:
             flags.append((key[0], fy_label, our_value, reference[key], v))
 
     with get_session() as session:
-        # Refresh this company's flags wholesale — a re-run reflects current
-        # state. Executed immediately (not queued on the session) because the
-        # ORM flushes pending INSERTs before DELETEs, which would collide with
-        # the old rows on the unique constraint.
+        # Triage verdicts (finclone.pipeline.flag_triage) are expensive — stage 2
+        # spends a model call per company — and _RECHECK_DAYS brings every
+        # company back through here every 14 days. Refreshing flags wholesale
+        # would therefore delete the entire explained queue on each sweep, so
+        # snapshot the verdicts first and carry them forward for flags whose
+        # underlying numbers are unchanged. A changed value is a genuinely
+        # different flag and is deliberately left untriaged for re-examination.
+        # Snapshotted as plain values because the ORM objects expire on delete.
+        prior = {
+            (f.canonical_concept, f.fiscal_year):
+                (f.our_value, f.reference_value, f.resolution, f.reason,
+                 f.resolved_by, f.reviewed, f.resolved)
+            for f in session.scalars(
+                select(ValidationFlag).where(ValidationFlag.company_id == company.id))
+        }
+        # Executed immediately (not queued on the session) because the ORM
+        # flushes pending INSERTs before DELETEs, which would collide with the
+        # old rows on the unique constraint.
         session.execute(delete(ValidationFlag).where(ValidationFlag.company_id == company.id))
         for concept, fy, our_value, ref_value, v in flags:
             session.add(ValidationFlag(
                 company_id=company.id, canonical_concept=concept, fiscal_year=fy,
                 our_value=our_value, reference_value=ref_value, variance=v,
+                **preserved_triage(prior.get((concept, fy)), our_value, ref_value),
             ))
         session.commit()
 

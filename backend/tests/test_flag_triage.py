@@ -135,8 +135,9 @@ def _payload(*verdicts):
 
 def test_accepts_a_well_formed_verdict():
     got = _clean_verdicts(
-        _payload({"id": 7, "resolution": "convention", "reason": "sign differs"}), {7})
-    assert got == {7: ("convention", "sign differs")}
+        _payload({"id": 7, "resolution": "convention", "basis": "filing_text",
+                  "reason": "sign differs"}), {7})
+    assert got == {7: ("convention", "filing_text", "sign differs")}
 
 
 def test_drops_ids_we_did_not_ask_about():
@@ -167,7 +168,7 @@ def test_first_verdict_wins_on_duplicate_id():
     got = _clean_verdicts(_payload(
         {"id": 7, "resolution": "convention", "reason": "first"},
         {"id": 7, "resolution": "real_issue", "reason": "second"}), {7})
-    assert got[7][1] == "first"
+    assert got[7][2] == "first"
 
 
 def test_string_id_is_coerced_not_rejected():
@@ -183,13 +184,13 @@ def test_malformed_payload_yields_nothing(payload):
 def test_non_dict_entries_are_skipped():
     got = _clean_verdicts(_payload(
         "garbage", {"id": 7, "resolution": "convention", "reason": "x"}), {7})
-    assert got == {7: ("convention", "x")}
+    assert got == {7: ("convention", "reasoning", "x")}
 
 
 def test_reason_truncated_to_the_column_width():
     got = _clean_verdicts(
         _payload({"id": 7, "resolution": "convention", "reason": "x" * 900}), {7})
-    assert len(got[7][1]) == 512
+    assert len(got[7][2]) == 512
 
 
 def test_unexplained_is_an_available_verdict():
@@ -282,3 +283,57 @@ def test_truly_empty_text_returns_empty():
 def test_statement_keywords_are_generic_enough_to_be_a_fallback():
     for kw in _STATEMENT_KEYWORDS:
         assert kw == kw.lower(), "matching is done on lowercased text"
+
+
+# --- basis: a verdict may not be closed unless it was read from the filing ---
+# On the first live run the model returned "restatement" for GOOGL and MSFT
+# figures while its own reason said "I cannot confirm from the filing text".
+# Those were stored resolved=True, hiding speculation as settled fact.
+
+from finclone.pipeline.flag_triage import BASES
+
+
+def _basis(raw_basis):
+    got = _clean_verdicts(
+        _payload({"id": 7, "resolution": "convention", "basis": raw_basis,
+                  "reason": "x"}), {7})
+    return got[7][1]
+
+
+def test_filing_text_basis_is_preserved():
+    assert _basis("filing_text") == "filing_text"
+
+
+def test_missing_or_bogus_basis_degrades_to_reasoning():
+    """Never to filing_text: the permissive default would let a malformed
+    response close a flag, and closing hides it from review."""
+    for raw in (None, "", "  ", "guessed", "FILING", 42, "verified"):
+        assert _basis(raw) == "reasoning"
+
+
+def test_basis_is_case_insensitive():
+    assert _basis(" Filing_Text ") == "filing_text"
+
+
+def test_declared_bases_are_exactly_the_two_we_handle():
+    assert BASES == ("filing_text", "reasoning")
+
+
+@pytest.mark.parametrize("resolution,basis,expect_closed", [
+    # benign verdict, actually read from the filing -> closed
+    ("convention", "filing_text", True),
+    ("immaterial", "filing_text", True),
+    ("restatement", "filing_text", True),
+    # benign verdict but only inferred -> stays open for review
+    ("convention", "reasoning", False),
+    ("restatement", "reasoning", False),
+    # review verdicts stay open regardless of basis
+    ("real_issue", "filing_text", False),
+    ("unexplained", "filing_text", False),
+    ("unexplained", "reasoning", False),
+])
+def test_close_rule(resolution, basis, expect_closed):
+    """Mirrors run_llm's decision: a flag closes only when the verdict is both
+    benign AND grounded in the filing text."""
+    closed = basis == "filing_text" and resolution not in NEEDS_REVIEW
+    assert closed is expect_closed

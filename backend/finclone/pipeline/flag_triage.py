@@ -182,20 +182,33 @@ outflow vs a positive amount spent, or one source including items the other excl
 - "real_issue": likely a genuine extraction error worth a human's attention.
 - "unexplained": you cannot determine the cause from the evidence provided.
 
+You must also state what your verdict rests on, in a "basis" field:
+- "filing_text": you found the relevant figures or disclosure in the excerpt \
+and your verdict follows from reading it.
+- "reasoning": the figures are not in the excerpt, and your verdict is inferred \
+from the line item, the signs, and the size of the gap.
+
 CRITICAL constraints:
 - You are given ONE filing, usually the most recent. Many flags concern earlier \
 fiscal years whose figures are NOT in that text. Never claim to have verified a \
-number you cannot see. If your verdict rests on reasoning about conventions or \
-definitions rather than on the filing text, say so plainly in the reason.
-- If you cannot settle a flag, return "unexplained". Do not guess a verdict to \
-fill the field — an honest "unexplained" routes it to a person, a wrong \
-"convention" hides a real error.
+number you cannot see — if you did not see it, the basis is "reasoning".
+- Do not hedge inside a confident verdict. If your reason would contain "I \
+cannot verify", "cannot confirm", or "likely", then either the basis is \
+"reasoning" or the resolution is "unexplained". Say which plainly; do not label \
+a flag settled and then undercut it in prose.
+- If you cannot settle a flag at all, return "unexplained". Do not guess a \
+verdict to fill the field — an honest "unexplained" routes it to a person, a \
+wrong "convention" hides a real error.
 - Reason must be one or two sentences, specific to that line item, and under 400 \
-characters. State what you relied on.
+characters.
 
 Respond with JSON only:
-{"verdicts": [{"id": <flag id>, "resolution": "<one of the five>", "reason": "<why>"}]}
+{"verdicts": [{"id": <flag id>, "resolution": "<one of the five>", \
+"basis": "filing_text" | "reasoning", "reason": "<why>"}]}
 Include every id you were given, exactly once."""
+
+#: How a verdict was arrived at. Only a filing-text verdict can close a flag.
+BASES = ("filing_text", "reasoning")
 
 
 def _keywords_for_concepts(concepts) -> list[str]:
@@ -246,15 +259,21 @@ def select_excerpt(text: str, concepts, ticker: str = "") -> str:
     return "\n\n---\n\n".join(chunks)
 
 
-def _clean_verdicts(payload: object, valid_ids: set[int]) -> dict[int, tuple[str, str]]:
+def _clean_verdicts(payload: object,
+                    valid_ids: set[int]) -> dict[int, tuple[str, str, str]]:
     """Validate model output before it becomes a stored explanation.
 
-    JSON mode guarantees syntax, not shape or honesty: drop unknown ids,
-    unrecognised resolutions and empty reasons rather than storing them.
+    Returns {flag_id: (resolution, basis, reason)}. JSON mode guarantees syntax,
+    not shape or honesty: drop unknown ids, unrecognised resolutions and empty
+    reasons rather than storing them.
+
+    An unrecognised or missing basis degrades to "reasoning", never to
+    "filing_text" — the permissive default would let a malformed response close
+    a flag, and closing hides it.
     """
     if not isinstance(payload, dict):
         return {}
-    out: dict[int, tuple[str, str]] = {}
+    out: dict[int, tuple[str, str, str]] = {}
     for raw in payload.get("verdicts", []) or []:
         if not isinstance(raw, dict):
             continue
@@ -268,7 +287,10 @@ def _clean_verdicts(payload: object, valid_ids: set[int]) -> dict[int, tuple[str
         reason = str(raw.get("reason") or "").strip()
         if resolution not in LLM_RESOLUTIONS or not reason:
             continue
-        out[flag_id] = (resolution, reason[:512])
+        basis = str(raw.get("basis") or "").strip().lower()
+        if basis not in BASES:
+            basis = "reasoning"
+        out[flag_id] = (resolution, basis, reason[:512])
     return out
 
 
@@ -344,7 +366,8 @@ def triage_company_with_llm(company: Company, flags: list, client: EdgarClient,
 def run_llm(limit: int | None = None, dry_run: bool = False) -> dict[str, int]:
     """Stage 2 over companies that still have untriaged flags. Resumable: a
     stored verdict takes a flag out of the pool, so a re-run continues."""
-    counts = {"companies": 0, "explained": 0, "needs_review": 0, "unanswered": 0, "failed": 0}
+    counts = {"companies": 0, "explained": 0, "needs_review": 0, "inferred": 0,
+              "unanswered": 0, "failed": 0}
     with get_session() as session:
         company_ids = list(session.scalars(
             select(ValidationFlag.company_id)
@@ -391,16 +414,24 @@ def run_llm(limit: int | None = None, dry_run: bool = False) -> dict[str, int]:
                 if verdict is None:
                     counts["unanswered"] += 1
                     continue
-                resolution, reason = verdict
+                resolution, basis, reason = verdict
                 flag.resolution = resolution
                 flag.reason = reason
-                flag.resolved_by = "model"
-                # real_issue / unexplained stay unresolved: they are the review
-                # queue, and marking them resolved would hide them.
-                flag.resolved = resolution not in NEEDS_REVIEW
+                # Distinguish a verdict read out of the filing from one inferred
+                # from the numbers. On the first live run the model returned
+                # "restatement" for figures it admitted it could not see, and
+                # marking those resolved hid speculation as settled fact.
+                verified = basis == "filing_text"
+                flag.resolved_by = "model" if verified else "model-inferred"
+                # A flag closes only when the verdict is both benign AND read
+                # from the filing. real_issue / unexplained are the review
+                # queue; an inferred verdict belongs there too.
+                flag.resolved = verified and resolution not in NEEDS_REVIEW
                 counts["explained"] += 1
-                if resolution in NEEDS_REVIEW:
+                if not flag.resolved:
                     counts["needs_review"] += 1
+                if not verified:
+                    counts["inferred"] += 1
             session.commit()
             counts["companies"] += 1
             print(f"  {ticker}: {len(verdicts)}/{len(flag_ids)} flags explained")
@@ -466,7 +497,8 @@ def main() -> None:
         print(f"LLM provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
         counts = run_llm(limit=args.limit, dry_run=args.dry_run)
         print(f"{counts['companies']} companies: {counts['explained']} flags explained "
-              f"({counts['needs_review']} need human review), "
+              f"({counts['needs_review']} still need human review, of which "
+              f"{counts['inferred']} were inferred rather than read from the filing), "
               f"{counts['unanswered']} unanswered, {counts['failed']} companies failed")
         print()
     _print_summary()

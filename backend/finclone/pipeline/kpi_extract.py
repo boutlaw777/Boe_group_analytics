@@ -34,7 +34,8 @@ from finclone.models import Company, KpiFact
 class _RateLimited(Exception):
     """The LLM provider's quota is exhausted — stop the sweep so a supervisor
     can resume it after the quota window (per-minute or per-day) resets."""
-from finclone.taxonomy.kpi_definitions import kpis_for_sector
+from finclone.taxonomy.gics_bridge import industry_for_company
+from finclone.taxonomy.kpi_definitions import kpis_for_company
 
 _CHUNK_SIZE = 15_000  # characters
 _CHUNK_OVERLAP = 500
@@ -157,13 +158,19 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
 
     submissions = client.company_submissions(cik)
     filing = latest_filing(submissions)
+    industry = industry_for_company(company.sic, company.sector)
     print(f"{ticker.upper()}: extracting KPIs from {filing['form']} filed {filing['filed_date']} "
-          f"(sector: {company.sector or 'unknown'})")
+          f"(sector: {company.sector or 'unknown'} | "
+          f"GICS: {industry.gics_industry if industry else 'unmapped — generic KPIs only'})")
     text = fetch_filing_text(client, cik, filing)
 
-    kpi_defs = kpis_for_sector(company.sector)
+    kpi_defs = kpis_for_company(company.sic, company.sector)
     keywords = [kw for kpi in kpi_defs for kw in kpi["keywords"]]
     labels = [kpi["label"] for kpi in kpi_defs]
+    # The model echoes the target label back with its own casing, so the same
+    # KPI arrived as both "Share repurchases" and "share repurchases" and was
+    # counted twice. Map whatever it returns back onto our canonical label.
+    canonical = {label.strip().lower(): label for label in labels}
     chunks = _select_chunks(text, keywords, KPI_MAX_CHUNKS)
     if not chunks:
         print(f"{ticker.upper()}: no KPI-relevant sections found in the filing")
@@ -175,6 +182,8 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
         for attempt in range(4):
             try:
                 for kpi in _extract_from_chunk(llm, labels, chunk):
+                    stated = kpi["name"].strip()
+                    kpi["name"] = canonical.get(stated.lower(), stated)
                     key = (kpi["name"].lower(), kpi["period"].lower())
                     found.setdefault(key, kpi)
                 break

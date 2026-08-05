@@ -187,6 +187,22 @@ class ValidationFlag(Base):
     variance: Mapped[float] = mapped_column(Float)  # |ours - ref| / |ref|
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # --- triage (finclone.pipeline.flag_triage) ---------------------------
+    # A bare flag count is unusable: the 1% threshold produced 34k flags over
+    # 94% of companies, which reads as "the data is broken" rather than "we
+    # check thoroughly". These columns carry *why* a flag exists, so the queue
+    # can be sorted by whether anyone needs to act on it.
+    #
+    # resolution: convention | immaterial | restatement | real_issue | None
+    #   None means untriaged, not "fine".
+    resolution: Mapped[str | None] = mapped_column(String(32), index=True)
+    reason: Mapped[str | None] = mapped_column(String(512))
+    # 'rule' verdicts are arithmetic and certain; 'model' verdicts are judgement
+    # and should be labelled as such to anyone reading the output.
+    resolved_by: Mapped[str | None] = mapped_column(String(16))
+    # Human sign-off, tracked separately from the machine verdict.
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
+
 
 class SheetTemplate(Base):
     """A user-defined Data Sheet layout (PDR Module 4: MCP).

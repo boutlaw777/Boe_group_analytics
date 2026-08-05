@@ -126,20 +126,35 @@ NEEDS_REVIEW = ("real_issue", "unexplained")
 
 # Filing prose for each canonical concept, for chunk pre-filtering. The concept
 # names are our own snake_case identifiers and appear nowhere in a filing.
+# Issuers name the same line item differently, so each concept needs the
+# alternates too: Apple's balance sheet says "Term debt", and searching only for
+# "long-term debt" found 0 hits in its 10-Q — which silently skipped the company.
 _CONCEPT_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "revenue": ("revenue", "net sales"),
+    "revenue": ("revenue", "net sales", "total sales"),
     "cost_of_revenue": ("cost of revenue", "cost of sales", "cost of goods"),
     "gross_profit": ("gross profit", "gross margin"),
-    "operating_income": ("operating income", "income from operations", "operating loss"),
-    "net_income": ("net income", "net loss"),
+    "operating_income": ("operating income", "income from operations", "operating loss",
+                         "loss from operations"),
+    "net_income": ("net income", "net loss", "net earnings"),
     "research_development": ("research and development",),
     "total_assets": ("total assets",),
     "total_liabilities": ("total liabilities",),
-    "stockholders_equity": ("stockholders' equity", "shareholders' equity", "total equity"),
-    "long_term_debt": ("long-term debt", "long term debt"),
-    "operating_cash_flow": ("operating activities", "cash provided by operating"),
-    "capex": ("capital expenditure", "purchases of property", "property and equipment"),
+    "stockholders_equity": ("stockholders' equity", "shareholders' equity", "total equity",
+                            "stockholders’ equity", "shareholders’ equity"),
+    "long_term_debt": ("long-term debt", "long term debt", "term debt", "notes payable",
+                       "senior notes", "borrowings"),
+    "operating_cash_flow": ("operating activities", "cash provided by operating",
+                            "cash used in operating"),
+    "capex": ("capital expenditure", "purchases of property", "property and equipment",
+              "additions to property", "payments for property"),
 }
+
+# Used when no concept keyword matches at all. These appear in essentially every
+# filing's financial statements, so they locate the statement pages generically.
+_STATEMENT_KEYWORDS: tuple[str, ...] = (
+    "consolidated balance sheet", "consolidated statements", "total assets",
+    "total liabilities", "in millions", "in thousands",
+)
 
 _TRIAGE_CHUNK_SIZE = 15_000     # characters, matching kpi_extract
 # Fewer chunks than KPI extraction: triage needs enough statement context to
@@ -207,6 +222,28 @@ def _select_chunks(text: str, keywords: list[str], max_chunks: int) -> list[str]
             scored.append((score, chunk))
     scored.sort(key=lambda pair: -pair[0])
     return [chunk for _, chunk in scored[:max_chunks]]
+
+
+def select_excerpt(text: str, concepts, ticker: str = "") -> str:
+    """The filing text to send, degrading gracefully rather than giving up.
+
+    Returning nothing when no concept keyword matches is the worst outcome: the
+    company is skipped silently and its flags stay untriaged forever, which is
+    exactly what happened to AAPL (its 10-Q says "Term debt", so a search for
+    "long-term debt" scored zero). A company whose flags all share one concept
+    has no other keyword to fall back on, so widen the search instead of
+    bailing — the model can still judge conventions from the figures, and will
+    answer "unexplained" honestly if the text doesn't help.
+    """
+    chunks = _select_chunks(text, _keywords_for_concepts(concepts), _TRIAGE_MAX_CHUNKS)
+    if not chunks:
+        chunks = _select_chunks(text, list(_STATEMENT_KEYWORDS), _TRIAGE_MAX_CHUNKS)
+        if chunks:
+            print(f"    {ticker}: no concept keyword matched — using statement pages")
+    if not chunks and text.strip():
+        chunks = [text[:_TRIAGE_CHUNK_SIZE]]
+        print(f"    {ticker}: no keyword matched at all — using start of filing")
+    return "\n\n---\n\n".join(chunks)
 
 
 def _clean_verdicts(payload: object, valid_ids: set[int]) -> dict[int, tuple[str, str]]:
@@ -291,11 +328,10 @@ def triage_company_with_llm(company: Company, flags: list, client: EdgarClient,
     cik = company.cik
     filing = latest_filing(client.company_submissions(cik))
     text = fetch_filing_text(client, cik, filing)
-    keywords = _keywords_for_concepts({f.canonical_concept for f in flags})
-    chunks = _select_chunks(text, keywords, _TRIAGE_MAX_CHUNKS)
-    if not chunks:
+    excerpt = select_excerpt(text, {f.canonical_concept for f in flags},
+                             ticker=company.ticker)
+    if not excerpt:
         return {}
-    excerpt = "\n\n---\n\n".join(chunks)
 
     verdicts: dict[int, tuple[str, str]] = {}
     for start in range(0, len(flags), _FLAGS_PER_CALL):

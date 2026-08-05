@@ -116,3 +116,124 @@ def test_resolution_is_from_the_declared_set():
     from finclone.pipeline.flag_triage import RULE_RESOLUTIONS
     for args in [(100.0, -101.0, 0.01), (100.0, 101.0, 0.01)]:
         assert classify(*args)[0] in RULE_RESOLUTIONS
+
+
+# --- stage 2: model output must be validated before it becomes an explanation
+
+from finclone.pipeline.flag_triage import (
+    LLM_RESOLUTIONS,
+    NEEDS_REVIEW,
+    _clean_verdicts,
+    _keywords_for_concepts,
+    _prompt_for,
+)
+
+
+def _payload(*verdicts):
+    return {"verdicts": list(verdicts)}
+
+
+def test_accepts_a_well_formed_verdict():
+    got = _clean_verdicts(
+        _payload({"id": 7, "resolution": "convention", "reason": "sign differs"}), {7})
+    assert got == {7: ("convention", "sign differs")}
+
+
+def test_drops_ids_we_did_not_ask_about():
+    """The model must not be able to write a verdict onto an unrelated flag."""
+    assert _clean_verdicts(
+        _payload({"id": 999, "resolution": "convention", "reason": "x"}), {7}) == {}
+
+
+def test_drops_unrecognised_resolution():
+    assert _clean_verdicts(
+        _payload({"id": 7, "resolution": "probably fine", "reason": "x"}), {7}) == {}
+
+
+def test_drops_empty_reason():
+    """A verdict with no reason is worse than no verdict — it looks explained."""
+    for reason in ("", "   ", None):
+        assert _clean_verdicts(
+            _payload({"id": 7, "resolution": "convention", "reason": reason}), {7}) == {}
+
+
+def test_resolution_is_case_insensitive():
+    got = _clean_verdicts(
+        _payload({"id": 7, "resolution": "  Convention ", "reason": "x"}), {7})
+    assert got[7][0] == "convention"
+
+
+def test_first_verdict_wins_on_duplicate_id():
+    got = _clean_verdicts(_payload(
+        {"id": 7, "resolution": "convention", "reason": "first"},
+        {"id": 7, "resolution": "real_issue", "reason": "second"}), {7})
+    assert got[7][1] == "first"
+
+
+def test_string_id_is_coerced_not_rejected():
+    assert 7 in _clean_verdicts(
+        _payload({"id": "7", "resolution": "convention", "reason": "x"}), {7})
+
+
+@pytest.mark.parametrize("payload", [None, [], "nope", {}, {"verdicts": None}])
+def test_malformed_payload_yields_nothing(payload):
+    assert _clean_verdicts(payload, {7}) == {}
+
+
+def test_non_dict_entries_are_skipped():
+    got = _clean_verdicts(_payload(
+        "garbage", {"id": 7, "resolution": "convention", "reason": "x"}), {7})
+    assert got == {7: ("convention", "x")}
+
+
+def test_reason_truncated_to_the_column_width():
+    got = _clean_verdicts(
+        _payload({"id": 7, "resolution": "convention", "reason": "x" * 900}), {7})
+    assert len(got[7][1]) == 512
+
+
+def test_unexplained_is_an_available_verdict():
+    """Stage 2 spans fiscal years whose figures aren't in the filing we supply,
+    so the model needs an honest way to decline rather than inventing one."""
+    assert "unexplained" in LLM_RESOLUTIONS
+    assert "unexplained" in NEEDS_REVIEW
+    assert "real_issue" in NEEDS_REVIEW
+    assert "convention" not in NEEDS_REVIEW
+
+
+# --- chunk pre-filter keywords -------------------------------------------
+
+def test_concept_keywords_are_filing_prose_not_our_identifiers():
+    """"capex" and "operating_cash_flow" appear nowhere in a filing."""
+    kws = _keywords_for_concepts({"capex", "operating_cash_flow"})
+    assert "capital expenditure" in kws
+    assert "operating activities" in kws
+    assert "operating_cash_flow" not in kws
+
+
+def test_unknown_concept_falls_back_to_readable_form():
+    assert _keywords_for_concepts({"some_new_concept"}) == ["some new concept"]
+
+
+def test_keywords_are_deduplicated():
+    kws = _keywords_for_concepts(["revenue", "revenue"])
+    assert len(kws) == len(set(kws))
+
+
+# --- prompt ---------------------------------------------------------------
+
+class _Flag:
+    def __init__(self, id, concept, fy, ours, ref, var):
+        self.id, self.canonical_concept, self.fiscal_year = id, concept, fy
+        self.our_value, self.reference_value, self.variance = ours, ref, var
+
+
+def test_prompt_carries_every_flag_id_and_states_the_filing_limit():
+    flags = [_Flag(1, "capex", 2024, 60_873_000, -59_173_000, 0.0287),
+             _Flag(2, "revenue", 2019, 100.0, 160.0, 0.6)]
+    prompt = _prompt_for("AAPL", {"form": "10-Q", "filed_date": "2026-05-01"},
+                         "excerpt text", flags)
+    assert "id=1" in prompt and "id=2" in prompt
+    # The model must know it cannot see FY2019 in a 2026 10-Q.
+    assert "only filing text available" in prompt
+    assert "fiscal_year=2019" in prompt

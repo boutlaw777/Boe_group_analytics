@@ -18,6 +18,7 @@ sent to the LLM); `label` is given to the LLM as an extraction target.
 
 import re
 
+from finclone.taxonomy.gics_blueprint import BLUEPRINT
 from finclone.taxonomy.gics_bridge import industry_for_company
 
 # KPIs every company may report regardless of sector
@@ -166,6 +167,26 @@ def keywords_for_kpi(phrase: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _canonical_blueprint_labels() -> dict[str, str]:
+    """One spelling per KPI across the whole blueprint, keyed by lowercase.
+
+    The blueprint mirrors the source PDF faithfully, and the PDF spells some
+    KPIs inconsistently between industries — "Volume" in five rows, "volume" in
+    four. Offering each industry its own casing stores the same metric under two
+    names, which is the duplicate-name bug (`Share repurchases` vs `share
+    repurchases`) reappearing from a different direction. Lowest industry number
+    wins, so the choice is stable rather than dependent on lookup order.
+    """
+    canonical: dict[str, str] = {}
+    for industry in sorted(BLUEPRINT, key=lambda b: b.number):
+        for phrase in industry.key_kpis:
+            canonical.setdefault(phrase.strip().lower(), phrase.strip())
+    return canonical
+
+
+_CANONICAL_LABELS = _canonical_blueprint_labels()
+
+
 def _blueprint_kpis(sic: str | None, sector: str | None) -> tuple[dict, ...]:
     """KPI targets from the company's GICS industry, or () if unresolvable."""
     industry = industry_for_company(sic, sector)
@@ -175,7 +196,8 @@ def _blueprint_kpis(sic: str | None, sector: str | None) -> tuple[dict, ...]:
     for phrase in industry.key_kpis:
         keywords = keywords_for_kpi(phrase)
         if keywords:
-            out.append({"label": phrase, "keywords": list(keywords)})
+            label = _CANONICAL_LABELS.get(phrase.strip().lower(), phrase.strip())
+            out.append({"label": label, "keywords": list(keywords)})
     return tuple(out)
 
 

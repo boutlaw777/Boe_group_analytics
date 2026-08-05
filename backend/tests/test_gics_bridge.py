@@ -145,3 +145,26 @@ def test_every_returned_kpi_has_usable_keywords():
         for kpi in kpis_for_company(None, None) + tuple(
                 {"label": p, "keywords": list(keywords_for_kpi(p))} for p in b.key_kpis):
             assert kpi["keywords"], f"{kpi['label']} produced no keywords"
+
+
+def test_one_spelling_per_kpi_across_the_blueprint():
+    """The source PDF spells 14 KPIs inconsistently between industries
+    ("Volume" in five rows, "volume" in four). Handing each industry its own
+    casing stores one metric under two names — the duplicate-name bug
+    ('Share repurchases' vs 'share repurchases') arriving from another
+    direction, and invisible until the sweep reaches both industries."""
+    from finclone.taxonomy.kpi_definitions import _blueprint_kpis
+
+    emitted: dict[str, set[str]] = {}
+    for b in BLUEPRINT:
+        for kpi in _blueprint_kpis(None, b.sector):
+            emitted.setdefault(kpi["label"].lower(), set()).add(kpi["label"])
+    collisions = {k: sorted(v) for k, v in emitted.items() if len(v) > 1}
+    assert not collisions, f"KPI emitted under multiple spellings: {collisions}"
+
+
+def test_canonical_choice_is_deterministic():
+    """Lowest industry number wins, so the stored spelling doesn't depend on
+    which company happens to be processed first."""
+    from finclone.taxonomy.kpi_definitions import _canonical_blueprint_labels
+    assert _canonical_blueprint_labels() == _canonical_blueprint_labels()

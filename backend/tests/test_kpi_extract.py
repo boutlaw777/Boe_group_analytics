@@ -25,3 +25,20 @@ def test_chunk_selection_prefers_keyword_dense_sections():
 
 def test_chunk_selection_empty_when_no_keywords_match():
     assert _select_chunks("nothing relevant here " * 1000, ["RevPAR"], max_chunks=3) == []
+
+
+# --- a single unresolvable ticker must not kill the sweep -------------------
+
+def test_not_ingested_is_a_recoverable_exception():
+    """It used to raise SystemExit, which inherits from BaseException, so the
+    sweep's `except Exception` never caught it: one bad ticker aborted the whole
+    --all run and the supervisor misreported the exit as a provider quota,
+    retrying the same ticker hourly forever. Coverage stalled at 521/3,010."""
+    from finclone.pipeline.kpi_extract import _NotIngested
+    assert issubclass(_NotIngested, Exception)
+    assert not issubclass(_NotIngested, SystemExit)
+    # and it must be catchable by the sweep's generic handler
+    try:
+        raise _NotIngested("CLBK")
+    except Exception as e:
+        assert str(e) == "CLBK"

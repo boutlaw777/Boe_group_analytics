@@ -34,6 +34,12 @@ from finclone.models import Company, KpiFact
 class _RateLimited(Exception):
     """The LLM provider's quota is exhausted — stop the sweep so a supervisor
     can resume it after the quota window (per-minute or per-day) resets."""
+
+
+class _NotIngested(Exception):
+    """The ticker resolves to a CIK with no Company row — usually SEC
+    ticker->CIK drift since ingest. Skippable in a sweep, fatal for an
+    explicitly named ticker."""
 from finclone.taxonomy.gics_bridge import industry_for_company
 from finclone.taxonomy.kpi_definitions import kpis_for_company
 
@@ -152,9 +158,13 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
     with get_session() as session:
         company = session.scalar(select(Company).where(Company.cik == cik))
     if company is None:
-        raise SystemExit(
-            f"{ticker.upper()} is not ingested yet — run: python -m finclone.pipeline.ingest {ticker.upper()}"
-        )
+        # Not SystemExit: that inherits from BaseException, so the sweep's
+        # `except Exception` never caught it and a single unresolvable ticker
+        # killed the whole --all run. The supervisor then misreported the
+        # non-zero exit as a provider quota and retried hourly, hitting the
+        # same ticker forever — the sweep stalled at 521 of 3,010 companies
+        # this way. Recoverable per-ticker error instead; main decides.
+        raise _NotIngested(ticker.upper())
 
     submissions = client.company_submissions(cik)
     filing = latest_filing(submissions)
@@ -288,6 +298,13 @@ def main() -> None:
             print(f"\nStopped at {ticker} ({i - 1}/{len(tickers)} done) — "
                   "re-run to resume; --all skips companies that already have KPIs.")
             return
+        except _NotIngested as e:
+            if not args.all:
+                raise SystemExit(
+                    f"{e} is not ingested yet — run: "
+                    f"python -m finclone.pipeline.ingest {e}")
+            failed += 1
+            print(f"{ticker}: not ingested (ticker->CIK drift?) — skipping")
         except _RateLimited:
             # Provider quota exhausted (per-minute burst survived retries, or
             # daily cap). Stop non-zero so the supervisor resumes after reset;

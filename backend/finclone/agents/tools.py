@@ -9,15 +9,23 @@ the agentic and deterministic paths can never silently diverge on what counts
 as a valid record.
 """
 
+import json
 from datetime import date
 
 from sqlalchemy import select
 
 from finclone.agents.runtime import Tool, run_agent, start_run
-from finclone.models import FinancialFact, KpiFact, ValidationFlag
+from finclone.models import FinancialFact, KpiFact, ValidationFlag, ValuationAuditFinding
 from finclone.pipeline.crossref import _annual_facts_from_rows
 from finclone.pipeline.flag_triage import BASES, LLM_RESOLUTIONS, NEEDS_REVIEW
 from finclone.pipeline.kpi_extract import _clean_kpi
+from finclone.taxonomy.gics_bridge import industry_for_company
+
+#: Severities the Valuation Auditing agent may record. Deliberately just two —
+#: "note" for a mild observation, "concern" for something worth a human's
+#: attention — mirroring the binary resolved/needs-review distinction used
+#: elsewhere rather than inventing a third tier nothing else in the queue has.
+VALUATION_SEVERITIES = ("note", "concern")
 
 _CHUNK_SIZE = 15_000  # characters, matching kpi_extract/flag_triage
 _CHUNK_OVERLAP = 500
@@ -198,6 +206,90 @@ def record_verdict_tool(session, valid_ids: set[int]) -> Tool:
                 "reason": {"type": "string"},
             },
             "required": ["flag_id", "resolution", "basis", "reason"],
+        },
+        fn=_fn,
+    )
+
+
+# --- Valuation Auditing tools ----------------------------------------------
+
+def screen_metrics_tool(session, company) -> Tool:
+    def _fn() -> dict:
+        from finclone.models import ScreenMetrics
+        row = session.get(ScreenMetrics, company.id)
+        if row is None or not row.metrics_json:
+            return {"error": "no computed screening metrics for this company"}
+        metrics = json.loads(row.metrics_json)
+        return {"fiscal_year": row.fiscal_year, "metrics": metrics}
+
+    return Tool(
+        name="get_screen_metrics",
+        description=("The platform's own computed valuation-relevant metrics for this company's "
+                    "latest fiscal year: margins, growth, ROE, free cash flow. These are what "
+                    "you are auditing."),
+        parameters={"type": "object", "properties": {}},
+        fn=_fn,
+    )
+
+
+def industry_profile_tool(company) -> Tool:
+    def _fn() -> dict:
+        industry = industry_for_company(company.sic, company.sector)
+        if industry is None:
+            return {"error": "no GICS industry resolved for this company's SIC/sector"}
+        return {
+            "gics_industry": industry.gics_industry,
+            "primary_valuation": list(industry.primary_valuation),
+            "key_kpis": list(industry.key_kpis),
+            "complexity": industry.complexity,
+        }
+
+    return Tool(
+        name="get_industry_profile",
+        description=("This company's GICS industry, the valuation methods typically used for it "
+                    "(e.g. DCF, EV/EBITDA), and the KPIs analysts expect for that industry — "
+                    "context for what 'plausible' looks like here."),
+        parameters={"type": "object", "properties": {}},
+        fn=_fn,
+    )
+
+
+def record_finding_tool(session, company, fiscal_year: int) -> Tool:
+    def _fn(concern: str, severity: str, reason: str) -> dict:
+        concern = (concern or "").strip().lower()[:32]
+        severity = (severity or "").strip().lower()
+        reason = (reason or "").strip()
+        if not concern:
+            return {"error": "concern is required"}
+        if severity not in VALUATION_SEVERITIES:
+            return {"error": f"severity must be one of {list(VALUATION_SEVERITIES)}"}
+        if not reason:
+            return {"error": "reason is required"}
+        row = ValuationAuditFinding(
+            company_id=company.id, fiscal_year=fiscal_year, concern=concern,
+            severity=severity, reason=reason[:512], created=date.today(),
+        )
+        session.add(row)
+        session.commit()
+        return {"status": "recorded", "id": row.id}
+
+    return Tool(
+        name="record_finding",
+        description=("Record one thing worth noting about this company's valuation inputs. Only "
+                    "call this for a genuine inconsistency or implausibility you can point to "
+                    "specific numbers for — not routine variation. Skip companies with nothing "
+                    "worth flagging; you don't have to call this at all."),
+        parameters={
+            "type": "object",
+            "properties": {
+                "concern": {"type": "string",
+                           "description": "short label, e.g. margin_implausible, "
+                                         "kpi_mismatch, fcf_valuation_fit"},
+                "severity": {"type": "string", "enum": list(VALUATION_SEVERITIES)},
+                "reason": {"type": "string",
+                          "description": "specific, cites the actual numbers, one or two sentences"},
+            },
+            "required": ["concern", "severity", "reason"],
         },
         fn=_fn,
     )

@@ -314,3 +314,29 @@ class AgentStep(Base):
     result_json: Mapped[str] = mapped_column(Text)
 
     run: Mapped[AgentRun] = relationship(back_populates="steps")
+
+
+class ValuationAuditFinding(Base):
+    """One thing the Valuation Auditing agent (BOE Analytics M2, worker role 3)
+    found worth a human's attention about a company's derived valuation inputs
+    — margins, growth, ROE, FCF margin (finclone.scout.compute_metrics) and
+    niche KPIs — for internal consistency and industry-appropriate plausibility.
+
+    Distinct from ValidationFlag (checks our SEC-extracted figures against an
+    independent reference source, SimFin) and KpiFact (the extracted values
+    themselves): this audits OUR OWN computed numbers against each other and
+    against the company's GICS-industry profile, not against a third source.
+    'cache_stale' findings are written by a deterministic pre-check (recomputed
+    metrics disagree with the cached ScreenMetrics row) and never need the LLM;
+    everything else is agent judgement.
+    """
+
+    __tablename__ = "valuation_audit_findings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    fiscal_year: Mapped[int]
+    concern: Mapped[str] = mapped_column(String(32))  # short label, e.g. margin_implausible
+    severity: Mapped[str] = mapped_column(String(16))  # note | concern
+    reason: Mapped[str] = mapped_column(String(512))
+    created: Mapped[date] = mapped_column(Date)

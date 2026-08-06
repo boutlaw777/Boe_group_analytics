@@ -21,7 +21,7 @@ from finclone.api import auth as api_auth
 from finclone.api import billing, portal
 from finclone.db import get_session, init_db
 from finclone.models import (AgentRun, AgentStep, ApiKey, ApiKeyUsage, Company, FinancialFact,
-                             KpiFact, SheetTemplate, ValidationFlag)
+                             KpiFact, SheetTemplate, ValidationFlag, ValuationAuditFinding)
 from finclone.pipeline.ingest import current_facts
 
 # Paths served without an API key even when enforcement is on
@@ -365,6 +365,12 @@ def get_validation_flags(ticker: str, session: Session = Depends(_session)) -> l
             "reference_value": v.reference_value,
             "variance": v.variance,
             "resolved": v.resolved,
+            # Added with flag_triage (2026-08-05): was previously silently
+            # dropped, so none of the explained flags were visible via the API.
+            "resolution": v.resolution,
+            "reason": v.reason,
+            "resolved_by": v.resolved_by,
+            "reviewed": v.reviewed,
         }
         for v in rows
     ]
@@ -402,6 +408,30 @@ def get_agent_runs(ticker: str, session: Session = Depends(_session)) -> list[di
             ],
         }
         for r in runs
+    ]
+
+
+@app.get("/companies/{ticker}/valuation-findings")
+def get_valuation_findings(ticker: str, session: Session = Depends(_session)) -> list[dict]:
+    """Findings from the Valuation Auditing agent (BOE Analytics M2) — issues
+    with the platform's OWN computed metrics (margins, growth, ROE, FCF) and
+    niche KPIs, for internal consistency and industry plausibility. Distinct
+    from /validation, which checks against an independent third-party source."""
+    company = _get_company(session, ticker)
+    rows = session.scalars(
+        select(ValuationAuditFinding)
+        .where(ValuationAuditFinding.company_id == company.id)
+        .order_by(ValuationAuditFinding.created.desc())
+    )
+    return [
+        {
+            "fiscal_year": f.fiscal_year,
+            "concern": f.concern,
+            "severity": f.severity,
+            "reason": f.reason,
+            "created": f.created.isoformat(),
+        }
+        for f in rows
     ]
 
 

@@ -1,6 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, Float, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finclone.db import Base
@@ -273,3 +273,44 @@ class KpiFact(Base):
     source_url: Mapped[str] = mapped_column(String(512))
 
     company: Mapped[Company] = relationship()
+
+
+class AgentRun(Base):
+    """One execution of an agent role (Data Parsing / Statement Reconciliation).
+
+    Separate from the data audit trail (FinancialFact.source_url, KpiFact.source_quote,
+    ValidationFlag.reason): those record what a number *is*; this records what the
+    agent *did* to arrive there — which tools it called, in what order, and why.
+    parent_run_id links a Statement Reconciliation run to the Data Parsing runs it
+    consulted, so a handoff is traceable rather than invisible.
+    """
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), index=True)  # parsing | reconciliation | parsing-consult
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id"), index=True)
+    goal: Mapped[str] = mapped_column(String(512))
+    # running | done | max_steps | failed
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    outcome: Mapped[str | None] = mapped_column(Text)
+    parent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    started: Mapped[datetime] = mapped_column(DateTime)
+    finished: Mapped[datetime | None] = mapped_column(DateTime)
+
+    steps: Mapped[list["AgentStep"]] = relationship(back_populates="run")
+
+
+class AgentStep(Base):
+    """One tool call within an agent run — the execution-log entry."""
+
+    __tablename__ = "agent_steps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    seq: Mapped[int]
+    tool: Mapped[str] = mapped_column(String(64))
+    args_json: Mapped[str] = mapped_column(Text)
+    result_json: Mapped[str] = mapped_column(Text)
+
+    run: Mapped[AgentRun] = relationship(back_populates="steps")

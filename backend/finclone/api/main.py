@@ -20,8 +20,8 @@ from sqlalchemy.orm import Session
 from finclone.api import auth as api_auth
 from finclone.api import billing, portal
 from finclone.db import get_session, init_db
-from finclone.models import (ApiKey, ApiKeyUsage, Company, FinancialFact, KpiFact,
-                             SheetTemplate, ValidationFlag)
+from finclone.models import (AgentRun, AgentStep, ApiKey, ApiKeyUsage, Company, FinancialFact,
+                             KpiFact, SheetTemplate, ValidationFlag)
 from finclone.pipeline.ingest import current_facts
 
 # Paths served without an API key even when enforcement is on
@@ -370,6 +370,41 @@ def get_validation_flags(ticker: str, session: Session = Depends(_session)) -> l
     ]
 
 
+@app.get("/companies/{ticker}/agent-runs")
+def get_agent_runs(ticker: str, session: Session = Depends(_session)) -> list[dict]:
+    """Execution log for the Data Parsing / Statement Reconciliation agents
+    (BOE Analytics M2) — what each run did, not the data it produced (that's
+    /kpis and /validation). Nested runs (a Reconciliation run's handoffs to
+    Data Parsing) are attached to their parent via parent_run_id."""
+    company = _get_company(session, ticker)
+    runs = list(session.scalars(
+        select(AgentRun).where(AgentRun.company_id == company.id).order_by(AgentRun.started.desc())
+    ))
+    steps_by_run: dict[int, list[AgentStep]] = {}
+    if runs:
+        for step in session.scalars(
+            select(AgentStep).where(AgentStep.run_id.in_([r.id for r in runs])).order_by(AgentStep.seq)
+        ):
+            steps_by_run.setdefault(step.run_id, []).append(step)
+    return [
+        {
+            "id": r.id,
+            "role": r.role,
+            "goal": r.goal,
+            "status": r.status,
+            "outcome": r.outcome,
+            "parent_run_id": r.parent_run_id,
+            "started": r.started.isoformat(),
+            "finished": r.finished.isoformat() if r.finished else None,
+            "steps": [
+                {"seq": s.seq, "tool": s.tool, "args": s.args_json, "result": s.result_json}
+                for s in steps_by_run.get(r.id, [])
+            ],
+        }
+        for r in runs
+    ]
+
+
 @app.get("/scout")
 def scout_screen(
     q: str = Query(..., min_length=3, description="Natural-language screen"),
@@ -389,7 +424,11 @@ def scout_screen(
     try:
         screen = translate_query(q, sectors)
     except openai.APIStatusError as e:
-        detail = "DeepSeek account has insufficient balance" if e.status_code == 402 \
+        # translate_query already retried via the Scout fallback provider
+        # (SCOUT_FALLBACK_API_KEY) if one is configured, so an exception here
+        # means both failed, or no fallback is configured — not necessarily
+        # DeepSeek specifically.
+        detail = "LLM provider account has insufficient balance" if e.status_code == 402 \
             else f"LLM error {e.status_code}"
         raise HTTPException(502, detail)
     except openai.APIError as e:

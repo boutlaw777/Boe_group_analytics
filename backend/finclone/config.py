@@ -36,6 +36,18 @@ else:
     KPI_BASE_URL = DEEPSEEK_BASE_URL
     KPI_MODEL = os.environ.get("FINCLONE_KPI_MODEL", "deepseek-chat")
 
+# Scout fallback provider. Scout is one interactive call per user query, not a
+# bulk sweep — the opposite volume profile from KPI extraction, where Gemini's
+# free-tier per-minute limit caused a multi-day stall. That history is exactly
+# why this is its OWN variable rather than reusing GEMINI_API_KEY above:
+# enabling this fallback must never flip KPI_API_KEY back to Gemini too.
+# Deliberately separate from DEEPSEEK_API_KEY's outage mode as well — a
+# DeepSeek balance/quota failure (the 2026-08-06 outage) is exactly the case
+# this exists to survive, so it cannot depend on the same account.
+SCOUT_FALLBACK_API_KEY = os.environ.get("SCOUT_FALLBACK_GEMINI_API_KEY", "")
+SCOUT_FALLBACK_BASE_URL = os.environ.get("SCOUT_FALLBACK_GEMINI_BASE_URL", _GEMINI_OPENAI_BASE)
+SCOUT_FALLBACK_MODEL = os.environ.get("SCOUT_FALLBACK_GEMINI_MODEL", "gemini-flash-lite-latest")
+
 # Cross-reference validation (SimFin, per PDR §3)
 SIMFIN_API_KEY = os.environ.get("SIMFIN_API_KEY", "")
 

@@ -9,13 +9,25 @@ the query structure, so results remain fully auditable.
 import json
 import time
 
+import openai
 from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from finclone.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, SCOUT_MODEL
+from finclone.config import (
+    DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, SCOUT_FALLBACK_API_KEY, SCOUT_FALLBACK_BASE_URL,
+    SCOUT_FALLBACK_MODEL, SCOUT_MODEL,
+)
 from finclone.models import Company, KpiFact, ScreenMetrics
 from finclone.pipeline.crossref import _our_annual_values
+
+# Provider failures worth falling back on: quota/balance exhaustion, rate
+# limits, and connection failures. NOT included: a malformed response from a
+# provider that did answer (json.JSONDecodeError) — that's the provider's
+# output being wrong, not the provider being unreachable, and retrying it on
+# a second provider wouldn't fix bad JSON, it would just mask which provider
+# produced it.
+_FALLBACK_WORTHY = (openai.APIStatusError, openai.APIConnectionError, openai.RateLimitError)
 
 # Metrics the screener understands. Base values come from the latest fiscal
 # year; growth compares against the prior year; ratios are derived.
@@ -136,17 +148,15 @@ def passes_filters(metrics: dict[str, float], filters: list[dict]) -> bool:
     return True
 
 
-def translate_query(query: str, sectors: list[str]) -> dict:
-    print(f"[scout] query: {query!r} — asking {SCOUT_MODEL} to translate...")
-    started = time.monotonic()
-    # Default SDK timeout is 600s x 2 retries — a network blip would pin a
-    # server thread for many minutes. Translation normally takes ~2s.
-    llm = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL,
-                 timeout=30, max_retries=1)
+def _translate_with(llm: OpenAI, model: str, query: str, sectors: list[str]) -> dict:
+    """One provider's attempt at translating the query. Raises on provider
+    failure (caller decides whether to retry elsewhere); a provider that
+    *answers* with unparseable JSON degrades to an empty screen rather than
+    raising, since a second provider can't fix that provider's bad output."""
     system = _SYSTEM_TEMPLATE.format(metrics=", ".join(METRIC_NAMES),
                                      sectors=", ".join(sectors) or "(none)")
     response = llm.chat.completions.create(
-        model=SCOUT_MODEL,
+        model=model,
         max_tokens=1024,
         response_format={"type": "json_object"},
         messages=[
@@ -159,8 +169,36 @@ def translate_query(query: str, sectors: list[str]) -> dict:
     except json.JSONDecodeError:
         print("[scout] LLM returned unparseable JSON — falling back to empty screen")
         parsed = {}
-    screen = sanitize_screen(parsed, sectors)
-    print(f"[scout] LLM translation took {time.monotonic() - started:.1f}s -> "
+    return sanitize_screen(parsed, sectors)
+
+
+def translate_query(query: str, sectors: list[str]) -> dict:
+    """Translate via DeepSeek; on a provider-side failure (quota, balance,
+    rate limit, connection), retry once via the Scout fallback provider if one
+    is configured. Added 2026-08-06 after a DeepSeek balance outage took Scout
+    down along with the KPI/triage pipelines sharing the same account — Scout
+    is one call per user query, the opposite volume profile from those bulk
+    sweeps, so a low-throughput fallback provider is safe here in a way it
+    was not for KPI extraction's free-tier Gemini stall."""
+    started = time.monotonic()
+    print(f"[scout] query: {query!r} — asking {SCOUT_MODEL} to translate...")
+    # Default SDK timeout is 600s x 2 retries — a network blip would pin a
+    # server thread for many minutes. Translation normally takes ~2s.
+    primary = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL,
+                     timeout=30, max_retries=1)
+    try:
+        screen = _translate_with(primary, SCOUT_MODEL, query, sectors)
+        provider = SCOUT_MODEL
+    except _FALLBACK_WORTHY as e:
+        if not SCOUT_FALLBACK_API_KEY:
+            raise
+        print(f"[scout] {SCOUT_MODEL} failed ({type(e).__name__}) — "
+              f"retrying via fallback {SCOUT_FALLBACK_MODEL}...")
+        fallback = OpenAI(api_key=SCOUT_FALLBACK_API_KEY, base_url=SCOUT_FALLBACK_BASE_URL,
+                          timeout=30, max_retries=1)
+        screen = _translate_with(fallback, SCOUT_FALLBACK_MODEL, query, sectors)
+        provider = f"{SCOUT_FALLBACK_MODEL} (fallback)"
+    print(f"[scout] {provider} translation took {time.monotonic() - started:.1f}s -> "
           f"sector={screen['sector']!r} filters={screen['filters']} sort_by={screen['sort_by']!r}")
     return screen
 

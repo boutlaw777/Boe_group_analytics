@@ -41,7 +41,7 @@ from finclone.agents.tools import (
     our_fact_tool, record_finding_tool, screen_metrics_tool,
 )
 from finclone.config import (
-    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
+    TRIAGE_API_KEY, TRIAGE_BASE_URL, TRIAGE_MODEL, require_triage_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
@@ -198,8 +198,8 @@ def run_valuation_agent(ticker: str, max_steps: int = 8) -> AgentResult | None:
             fetch_excerpt_tool(text),
             record_finding_tool(session, company, fiscal_year),
         ]
-        llm = OpenAI(api_key=KPI_API_KEY, base_url=KPI_BASE_URL, timeout=60, max_retries=1)
-        return run_agent(llm, KPI_MODEL, _SYSTEM, goal, tools,
+        llm = OpenAI(api_key=TRIAGE_API_KEY, base_url=TRIAGE_BASE_URL, timeout=60, max_retries=1)
+        return run_agent(llm, TRIAGE_MODEL, _SYSTEM, goal, tools,
                          session=session, run=run, max_steps=max_steps)
 
 
@@ -208,8 +208,8 @@ def main() -> None:
     parser.add_argument("tickers", nargs="+", help="tickers to audit (already ingested)")
     parser.add_argument("--max-steps", type=int, default=8)
     args = parser.parse_args()
-    require_bulk_provider()
-    print(f"Valuation Auditing agent | provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
+    require_triage_provider()
+    print(f"Valuation Auditing agent | provider: {TRIAGE_BASE_URL} | model: {TRIAGE_MODEL}")
     init_db()
 
     for ticker in args.tickers:

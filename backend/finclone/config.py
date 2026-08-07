@@ -67,6 +67,65 @@ def require_bulk_provider() -> None:
             "  Override (spends real credit): FINCLONE_ALLOW_DEEPSEEK_BULK=true")
 
 
+# Flag-triage stage 2 provider. Deliberately pinned to DeepSeek, decoupled
+# from KPI_API_KEY/GEMINI_API_KEY above (2026-08-08): the user wants KPI
+# extraction on the free Gemini tier but triage explanations to keep spending
+# the paid DeepSeek balance — sharing KPI_API_KEY would silently drag triage
+# onto Gemini too the moment GEMINI_API_KEY is set, which is exactly wrong for
+# what was asked. Same reasoning as SCOUT_MODEL above, same fix.
+TRIAGE_API_KEY = DEEPSEEK_API_KEY
+TRIAGE_BASE_URL = DEEPSEEK_BASE_URL
+TRIAGE_MODEL = os.environ.get("FINCLONE_TRIAGE_MODEL", "deepseek-chat")
+
+# Runtime balance floor for flag triage (2026-08-08): "spend up to $10, then
+# stop rather than run the account to zero again." DeepSeek has no native
+# spend-limit setting reachable via API, so this is enforced from our side —
+# checked periodically during the run via GET /user/balance, not a one-time
+# check at startup, since the whole point is catching it mid-run before the
+# balance is gone, not just at the first company.
+DEEPSEEK_BALANCE_FLOOR = float(os.environ.get("FINCLONE_DEEPSEEK_BALANCE_FLOOR", "10"))
+
+
+def deepseek_balance_remaining() -> float | None:
+    """Current USD balance on the DeepSeek account, or None if the check
+    itself failed. None must be treated as "unknown, proceed" by callers — a
+    transient network hiccup on the balance endpoint is not a reason to halt
+    a run that could otherwise keep going.
+    """
+    if not DEEPSEEK_API_KEY:
+        return None
+    import httpx
+    try:
+        resp = httpx.get(
+            f"{DEEPSEEK_BASE_URL}/user/balance",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}, timeout=10.0)
+        resp.raise_for_status()
+        for info in resp.json().get("balance_infos", []):
+            if info.get("currency") == "USD":
+                return float(info["total_balance"])
+        return None
+    except (httpx.HTTPError, KeyError, ValueError, TypeError):
+        return None
+
+
+def require_triage_provider() -> None:
+    """Refuse to start bulk flag-triage on the paid DeepSeek account without
+    an explicit opt-in — same FINCLONE_ALLOW_DEEPSEEK_BULK switch as
+    require_bulk_provider, since both are "real money, thousands of calls"
+    guards, but triage is never a Gemini candidate (its whole job is judgement
+    a low-quality free model does poorly), so the message doesn't mention it.
+    """
+    if not TRIAGE_API_KEY:
+        raise SystemExit("No DeepSeek key set. Add DEEPSEEK_API_KEY to backend\\.env")
+    if not ALLOW_DEEPSEEK_BULK:
+        raise SystemExit(
+            "Refusing to run bulk flag triage on DeepSeek.\n"
+            "  This bills the prepaid DeepSeek balance across every untriaged "
+            "flag — deliberate, since triage needs real judgement, not the "
+            "free tier.\n"
+            "  Confirm the spend: FINCLONE_ALLOW_DEEPSEEK_BULK=true")
+
+
 # Scout fallback provider. Scout is one interactive call per user query, not a
 # bulk sweep — the opposite volume profile from KPI extraction, where Gemini's
 # free-tier per-minute limit caused a multi-day stall. That history is exactly

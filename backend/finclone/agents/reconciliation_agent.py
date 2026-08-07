@@ -32,7 +32,7 @@ from finclone.agents.tools import (
     consult_parsing_agent_tool, fetch_excerpt_tool, our_fact_tool, record_verdict_tool,
 )
 from finclone.config import (
-    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
+    TRIAGE_API_KEY, TRIAGE_BASE_URL, TRIAGE_MODEL, require_triage_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
@@ -105,14 +105,14 @@ def run_reconciliation_agent(ticker: str, max_steps: int = 16) -> AgentResult | 
         goal = _goal_for(company.ticker, filing, flags)
 
         run = start_run(session, role="reconciliation", company_id=company.id, goal=goal)
-        llm = OpenAI(api_key=KPI_API_KEY, base_url=KPI_BASE_URL, timeout=90, max_retries=1)
+        llm = OpenAI(api_key=TRIAGE_API_KEY, base_url=TRIAGE_BASE_URL, timeout=90, max_retries=1)
         tools = [
             fetch_excerpt_tool(text),
             our_fact_tool(session, company),
             record_verdict_tool(session, {f.id for f in flags}),
-            consult_parsing_agent_tool(llm, KPI_MODEL, session, run, company, filing, text),
+            consult_parsing_agent_tool(llm, TRIAGE_MODEL, session, run, company, filing, text),
         ]
-        return run_agent(llm, KPI_MODEL, _SYSTEM, goal, tools,
+        return run_agent(llm, TRIAGE_MODEL, _SYSTEM, goal, tools,
                          session=session, run=run, max_steps=max_steps)
 
 
@@ -121,8 +121,8 @@ def main() -> None:
     parser.add_argument("tickers", nargs="+", help="tickers with open flags to triage")
     parser.add_argument("--max-steps", type=int, default=16)
     args = parser.parse_args()
-    require_bulk_provider()
-    print(f"Statement Reconciliation agent | provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
+    require_triage_provider()
+    print(f"Statement Reconciliation agent | provider: {TRIAGE_BASE_URL} | model: {TRIAGE_MODEL}")
     init_db()
 
     for ticker in args.tickers:

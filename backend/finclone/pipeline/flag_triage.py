@@ -31,7 +31,8 @@ from openai import OpenAI
 from sqlalchemy import func, select
 
 from finclone.config import (
-    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
+    DEEPSEEK_BALANCE_FLOOR, TRIAGE_API_KEY, TRIAGE_BASE_URL, TRIAGE_MODEL,
+    deepseek_balance_remaining, require_triage_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
@@ -300,7 +301,7 @@ def _ask(llm: OpenAI, prompt: str) -> dict:
     for attempt in range(4):
         try:
             response = llm.chat.completions.create(
-                model=KPI_MODEL,
+                model=TRIAGE_MODEL,
                 max_tokens=4096,
                 response_format={"type": "json_object"},
                 messages=[{"role": "system", "content": _LLM_SYSTEM},
@@ -382,11 +383,24 @@ def run_llm(limit: int | None = None, dry_run: bool = False) -> dict[str, int]:
           f"{' (dry run — no model calls)' if dry_run else ''}...")
 
     if not dry_run:
-        require_bulk_provider()
+        require_triage_provider()
     client = EdgarClient()
-    llm = OpenAI(api_key=KPI_API_KEY, base_url=KPI_BASE_URL, timeout=90, max_retries=1)
+    llm = OpenAI(api_key=TRIAGE_API_KEY, base_url=TRIAGE_BASE_URL, timeout=90, max_retries=1)
 
     for i, company_id in enumerate(company_ids, start=1):
+        if not dry_run:
+            # Checked every company, not once at startup: the point is to
+            # catch the balance crossing the floor mid-run, before it reaches
+            # zero the way the previous DeepSeek account did unnoticed for
+            # days. None (check failed) is treated as "unknown, keep going" —
+            # a network hiccup on the balance endpoint must not halt triage.
+            remaining = deepseek_balance_remaining()
+            if remaining is not None and remaining <= DEEPSEEK_BALANCE_FLOOR:
+                print(f"DeepSeek balance ${remaining:.2f} has reached the "
+                      f"${DEEPSEEK_BALANCE_FLOOR:.2f} floor — stopping "
+                      f"({i - 1}/{len(company_ids)} companies done this run). "
+                      "Re-run to resume once more balance is available.")
+                break
         with get_session() as session:
             company = session.get(Company, company_id)
             flags = list(session.scalars(
@@ -495,9 +509,10 @@ def main() -> None:
               f"{counts['deferred']} deferred to stage 2")
         print()
     if args.llm:
-        if not KPI_API_KEY:
+        if not TRIAGE_API_KEY:
             raise SystemExit("No LLM key set. Add DEEPSEEK_API_KEY to backend\\.env")
-        print(f"LLM provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
+        print(f"LLM provider: {TRIAGE_BASE_URL} | model: {TRIAGE_MODEL} "
+              f"| stop floor: ${DEEPSEEK_BALANCE_FLOOR:.2f}")
         counts = run_llm(limit=args.limit, dry_run=args.dry_run)
         print(f"{counts['companies']} companies: {counts['explained']} flags explained "
               f"({counts['needs_review']} still need human review, of which "

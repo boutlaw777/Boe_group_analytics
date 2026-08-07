@@ -24,7 +24,8 @@ import openai
 from openai import OpenAI
 from sqlalchemy import select
 
-from finclone.config import KPI_API_KEY, KPI_BASE_URL, KPI_MAX_CHUNKS, KPI_MODEL
+from finclone.config import (
+    KPI_API_KEY, KPI_BASE_URL, KPI_MAX_CHUNKS, KPI_MODEL, require_bulk_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, inline_viewer_url, latest_filing
@@ -259,11 +260,7 @@ def main() -> None:
     args = parser.parse_args()
     if not args.tickers and not args.all:
         parser.error("pass tickers or --all")
-    if not KPI_API_KEY:
-        raise SystemExit(
-            "No KPI LLM key set. Add GEMINI_API_KEY (free tier) or "
-            "DEEPSEEK_API_KEY to backend\\.env"
-        )
+    require_bulk_provider()
     masked = (f"{KPI_API_KEY[:6]}...{KPI_API_KEY[-4:]}"
               if len(KPI_API_KEY) > 12 else "(too short — check .env)")
     print(f"KPI LLM provider: {KPI_BASE_URL} | model: {KPI_MODEL} | key: {masked}")

@@ -36,6 +36,37 @@ else:
     KPI_BASE_URL = DEEPSEEK_BASE_URL
     KPI_MODEL = os.environ.get("FINCLONE_KPI_MODEL", "deepseek-chat")
 
+# Spend guard for bulk LLM work (added 2026-08-08, DeepSeek balance ~$10).
+# The KPI_* fallback above is silent by design — convenient when DeepSeek had
+# credit, dangerous now: with GEMINI_API_KEY unset, a KPI sweep or triage run
+# quietly bills thousands of calls to the small prepaid DeepSeek balance and
+# drains it long before the sweep finishes. Bulk entrypoints call
+# require_bulk_provider() so that misconfiguration fails loudly at startup
+# instead of showing up as an exhausted balance hours later. Scout is exempt —
+# one call per user query is the volume profile DeepSeek is funded for.
+ALLOW_DEEPSEEK_BULK = os.environ.get(
+    "FINCLONE_ALLOW_DEEPSEEK_BULK", "").strip().lower() in ("1", "true", "yes")
+
+
+def require_bulk_provider() -> None:
+    """Refuse to start bulk LLM work on the paid DeepSeek account.
+
+    Raises SystemExit when no KPI key is configured at all, or when KPI work
+    would fall through to DeepSeek without an explicit opt-in.
+    """
+    if not KPI_API_KEY:
+        raise SystemExit(
+            "No KPI LLM key set. Add GEMINI_API_KEY (free tier) to backend\\.env")
+    if KPI_API_KEY == DEEPSEEK_API_KEY and not ALLOW_DEEPSEEK_BULK:
+        raise SystemExit(
+            "Refusing to run bulk LLM work on DeepSeek.\n"
+            "  GEMINI_API_KEY is unset, so KPI/triage calls would bill the "
+            "prepaid DeepSeek balance — a full sweep costs far more than it "
+            "holds, and draining it also takes Scout down.\n"
+            "  Fix: set GEMINI_API_KEY in backend\\.env (free tier).\n"
+            "  Override (spends real credit): FINCLONE_ALLOW_DEEPSEEK_BULK=true")
+
+
 # Scout fallback provider. Scout is one interactive call per user query, not a
 # bulk sweep — the opposite volume profile from KPI extraction, where Gemini's
 # free-tier per-minute limit caused a multi-day stall. That history is exactly

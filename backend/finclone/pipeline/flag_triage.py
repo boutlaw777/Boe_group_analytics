@@ -30,7 +30,8 @@ import openai
 from openai import OpenAI
 from sqlalchemy import func, select
 
-from finclone.config import KPI_API_KEY, KPI_BASE_URL, KPI_MODEL
+from finclone.config import (
+    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
@@ -380,6 +381,8 @@ def run_llm(limit: int | None = None, dry_run: bool = False) -> dict[str, int]:
     print(f"Stage 2: {len(company_ids)} companies with untriaged flags"
           f"{' (dry run — no model calls)' if dry_run else ''}...")
 
+    if not dry_run:
+        require_bulk_provider()
     client = EdgarClient()
     llm = OpenAI(api_key=KPI_API_KEY, base_url=KPI_BASE_URL, timeout=90, max_retries=1)
 

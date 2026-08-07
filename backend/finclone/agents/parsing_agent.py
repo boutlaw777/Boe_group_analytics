@@ -29,7 +29,8 @@ from sqlalchemy import select
 
 from finclone.agents.runtime import AgentResult, run_agent, start_run
 from finclone.agents.tools import existing_kpis_tool, fetch_excerpt_tool, record_kpi_tool
-from finclone.config import KPI_API_KEY, KPI_BASE_URL, KPI_MODEL
+from finclone.config import (
+    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, inline_viewer_url, latest_filing
@@ -94,8 +95,7 @@ def main() -> None:
     parser.add_argument("tickers", nargs="+", help="tickers to run (already ingested)")
     parser.add_argument("--max-steps", type=int, default=8)
     args = parser.parse_args()
-    if not KPI_API_KEY:
-        raise SystemExit("No KPI LLM key set. Add GEMINI_API_KEY or DEEPSEEK_API_KEY to backend\\.env")
+    require_bulk_provider()
     print(f"Data Parsing agent | provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
     init_db()
 

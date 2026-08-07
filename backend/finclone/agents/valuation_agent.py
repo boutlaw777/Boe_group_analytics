@@ -40,7 +40,8 @@ from finclone.agents.tools import (
     existing_kpis_tool, fetch_excerpt_tool, industry_profile_tool,
     our_fact_tool, record_finding_tool, screen_metrics_tool,
 )
-from finclone.config import KPI_API_KEY, KPI_BASE_URL, KPI_MODEL
+from finclone.config import (
+    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
@@ -207,8 +208,7 @@ def main() -> None:
     parser.add_argument("tickers", nargs="+", help="tickers to audit (already ingested)")
     parser.add_argument("--max-steps", type=int, default=8)
     args = parser.parse_args()
-    if not KPI_API_KEY:
-        raise SystemExit("No KPI LLM key set. Add GEMINI_API_KEY or DEEPSEEK_API_KEY to backend\\.env")
+    require_bulk_provider()
     print(f"Valuation Auditing agent | provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
     init_db()
 

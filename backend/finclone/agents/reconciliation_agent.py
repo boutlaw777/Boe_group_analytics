@@ -31,7 +31,8 @@ from finclone.agents.runtime import AgentResult, run_agent, start_run
 from finclone.agents.tools import (
     consult_parsing_agent_tool, fetch_excerpt_tool, our_fact_tool, record_verdict_tool,
 )
-from finclone.config import KPI_API_KEY, KPI_BASE_URL, KPI_MODEL
+from finclone.config import (
+    KPI_API_KEY, KPI_BASE_URL, KPI_MODEL, require_bulk_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
@@ -120,8 +121,7 @@ def main() -> None:
     parser.add_argument("tickers", nargs="+", help="tickers with open flags to triage")
     parser.add_argument("--max-steps", type=int, default=16)
     args = parser.parse_args()
-    if not KPI_API_KEY:
-        raise SystemExit("No KPI LLM key set. Add GEMINI_API_KEY or DEEPSEEK_API_KEY to backend\\.env")
+    require_bulk_provider()
     print(f"Statement Reconciliation agent | provider: {KPI_BASE_URL} | model: {KPI_MODEL}")
     init_db()
 

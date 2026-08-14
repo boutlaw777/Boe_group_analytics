@@ -127,3 +127,21 @@ def test_balance_remaining_returns_none_on_network_failure(monkeypatch):
     monkeypatch.setattr(config, "DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setattr(httpx, "get", _raise)
     assert config.deepseek_balance_remaining() is None
+
+
+# --- the floor must guard KPI extraction too, not just flag triage ---------
+
+def test_kpi_sweep_watches_balance_only_when_billing_deepseek():
+    """KPI extraction moved to DeepSeek on 2026-08-09 at the user's request.
+    The $10 floor previously guarded only flag triage, so a 2,500-company KPI
+    sweep would have sailed straight past the limit. It must watch the balance
+    when billing DeepSeek — and must NOT when on Gemini's free tier, where
+    there is no balance to protect and the check would be a wasted round-trip
+    per company."""
+    import inspect
+
+    from finclone.pipeline import kpi_extract
+    source = inspect.getsource(kpi_extract.main)
+    assert "watch_balance = KPI_API_KEY == DEEPSEEK_API_KEY" in source
+    assert "deepseek_balance_remaining()" in source
+    assert "DEEPSEEK_BALANCE_FLOOR" in source

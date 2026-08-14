@@ -25,7 +25,8 @@ from openai import OpenAI
 from sqlalchemy import select
 
 from finclone.config import (
-    KPI_API_KEY, KPI_BASE_URL, KPI_MAX_CHUNKS, KPI_MODEL, require_bulk_provider)
+    DEEPSEEK_API_KEY, DEEPSEEK_BALANCE_FLOOR, KPI_API_KEY, KPI_BASE_URL, KPI_MAX_CHUNKS,
+    KPI_MODEL, deepseek_balance_remaining, require_bulk_provider)
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, inline_viewer_url, latest_filing
@@ -288,7 +289,22 @@ def main() -> None:
     client = EdgarClient()
     llm = OpenAI(api_key=KPI_API_KEY, base_url=KPI_BASE_URL, timeout=60, max_retries=1)
     failed = 0
+    # Only meaningful when KPI work is actually billing DeepSeek. On Gemini's
+    # free tier there is no balance to protect, and calling the DeepSeek balance
+    # endpoint every company would be a pointless round-trip per ticker.
+    watch_balance = KPI_API_KEY == DEEPSEEK_API_KEY
     for i, ticker in enumerate(tickers, start=1):
+        if watch_balance:
+            # Checked per company, not once at startup: a 2,500-company sweep
+            # would otherwise sail past the floor and empty the account, which
+            # is exactly the failure this floor exists to prevent.
+            remaining = deepseek_balance_remaining()
+            if remaining is not None and remaining <= DEEPSEEK_BALANCE_FLOOR:
+                print(f"DeepSeek balance ${remaining:.2f} has reached the "
+                      f"${DEEPSEEK_BALANCE_FLOOR:.2f} floor — stopping "
+                      f"({i - 1}/{len(tickers)} processed this run). "
+                      "Re-run to resume once more balance is available.")
+                break
         try:
             extract_ticker(ticker, client, llm)
         except KeyboardInterrupt:

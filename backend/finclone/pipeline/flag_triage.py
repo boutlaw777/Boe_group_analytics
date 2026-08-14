@@ -36,7 +36,11 @@ from finclone.config import (
 from finclone.db import get_session, init_db
 from finclone.edgar.client import EdgarClient
 from finclone.edgar.documents import fetch_filing_text, latest_filing
-from finclone.models import Company, ValidationFlag
+from finclone.models import Company, FinancialFact, ValidationFlag
+# Imported rather than reimplemented on purpose: the reconciliation below is
+# only valid if it reads the *same* annual value crossref compared, so it must
+# share crossref's FY-over-Q4 period selection rather than a lookalike copy.
+from finclone.pipeline.crossref import _annual_facts_from_rows
 
 
 class _RateLimited(Exception):
@@ -54,6 +58,70 @@ _CONVENTION_MAX_VARIANCE = 0.05
 _IMMATERIAL_MAX_VARIANCE = 0.02
 
 RULE_RESOLUTIONS = ("convention", "immaterial")
+
+# A total that our figure plus the company's own current-maturity lines
+# reproduces this closely is the same debt cut at a different point. Tighter
+# than _CONVENTION_MAX_VARIANCE because this test is an identity, not a
+# tolerance: the components either add up or they don't, and the only slack
+# needed is for rounding in a restated component.
+_MATURITY_SPLIT_TOLERANCE = 0.01
+
+# Concept -> current-maturity component sets a reference "total" might fold in.
+#
+# Our `long_term_debt` is deliberately non-current only (see normalize.py), while
+# reference sources commonly publish total term debt. Apple is the worked example:
+# its own 10-K tags both `LongTermDebtNoncurrent` (78,328 FY2025) and `LongTermDebt`
+# (90,678) — so the FY2023-FY2025 flags were never a disagreement between sources,
+# just the two sides quoting different cuts of the same schedule.
+#
+# Combinations are tried in order so the reason names the smallest sufficient set:
+# a filer whose total is explained by the current portion alone should not have
+# commercial paper dragged into the explanation.
+_MATURITY_COMPONENTS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "long_term_debt": (
+        ("long_term_debt_current",),
+        ("debt_current",),
+        ("long_term_debt_current", "commercial_paper"),
+    ),
+}
+
+
+def _annual_values(session, company_id: int) -> dict[tuple[str, int], float]:
+    """This company's current annual values keyed by (concept, fiscal year)."""
+    rows = list(session.scalars(
+        select(FinancialFact).where(FinancialFact.company_id == company_id)))
+    return {key: f.value for key, f in _annual_facts_from_rows(rows).items()}
+
+
+def classify_maturity_split(
+    flag: ValidationFlag, annual: dict[tuple[str, int], float],
+) -> tuple[str, str] | None:
+    """Settle a flag where the reference reports a total and we report a part.
+
+    Certain in the same sense as `classify`: this only fires when our figure plus
+    named components from the company's own filing *reproduce* the reference
+    value. A near-miss is not evidence of a convention difference, so it defers.
+    """
+    combos = _MATURITY_COMPONENTS.get(flag.canonical_concept)
+    if not combos or flag.our_value is None or not flag.reference_value:
+        return None
+
+    for combo in combos:
+        parts = [(name, annual.get((name, flag.fiscal_year))) for name in combo]
+        if any(value is None for _, value in parts):
+            continue
+        total = flag.our_value + sum(value for _, value in parts)
+        gap = abs(total - flag.reference_value) / abs(flag.reference_value)
+        if gap > _MATURITY_SPLIT_TOLERANCE:
+            continue
+        detail = " + ".join(f"{name} {value:,.0f}" for name, value in parts)
+        return ("convention",
+                f"Maturity-split convention: we report {flag.canonical_concept} "
+                f"non-current only ({flag.our_value:,.0f}); the reference reports the "
+                f"total. Ours + {detail} = {total:,.0f} against reference "
+                f"{flag.reference_value:,.0f} (within {gap:.2%}). Both figures are "
+                f"correct — they answer different questions. No action needed.")
+    return None
 
 
 def classify(our_value: float | None, reference_value: float | None,
@@ -98,9 +166,22 @@ def run_rules(limit: int | None = None, redo: bool = False) -> dict[str, int]:
         if limit:
             query = query.limit(limit)
         flags = list(session.scalars(query))
+
+        # One fact query per company, and only for companies actually carrying a
+        # splittable concept — the reconciliation needs the whole fact set, which
+        # is far too expensive to fetch per flag across a 34k queue.
+        annual_by_company: dict[int, dict[tuple[str, int], float]] = {}
+        needs_facts = {f.company_id for f in flags
+                       if f.canonical_concept in _MATURITY_COMPONENTS}
+        for company_id in needs_facts:
+            annual_by_company[company_id] = _annual_values(session, company_id)
+
         for flag in flags:
             counts["examined"] += 1
             verdict = classify(flag.our_value, flag.reference_value, flag.variance)
+            if verdict is None:
+                verdict = classify_maturity_split(
+                    flag, annual_by_company.get(flag.company_id, {}))
             if verdict is None:
                 counts["deferred"] += 1
                 continue

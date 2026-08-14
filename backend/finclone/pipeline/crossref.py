@@ -29,6 +29,7 @@ from finclone.config import CROSSREF_VARIANCE_THRESHOLD, SIMFIN_API_KEY
 from finclone.db import get_session, init_db
 from finclone.models import Company, CrossrefCheck, FinancialFact, ValidationFlag
 from finclone.pipeline.ingest import current_facts
+from finclone.pipeline.notify import NewFlag, notify_new_flags
 
 # --all re-validates a company at most once per this window, so the sweep
 # advances through the universe across SimFin's daily quota instead of
@@ -69,6 +70,16 @@ _SIMFIN_FIELD_MAP: dict[str, dict[str, str]] = {
         "Change in Fixed Assets & Intangibles": "capex",
     },
 }
+
+#: Canonical concepts the reference source actually covers, and therefore the
+#: only ones a clean cross-reference run can vouch for. Derived from the field
+#: map above so it cannot drift out of step with what is really compared —
+#: consumers use it to distinguish "checked and agreed" from "never checked".
+COMPARABLE_CONCEPTS: frozenset[str] = frozenset(
+    concept
+    for statement in _SIMFIN_FIELD_MAP.values()
+    for concept in statement.values()
+)
 
 
 #: The triage fields carried across a flag refresh, and their reset values.
@@ -252,13 +263,25 @@ def crossref_ticker(ticker: str) -> None:
         # flushes pending INSERTs before DELETEs, which would collide with the
         # old rows on the unique constraint.
         session.execute(delete(ValidationFlag).where(ValidationFlag.company_id == company.id))
+        # A flag is *new* when it carries no triage forward — either the key is
+        # unseen or its numbers moved, which preserved_triage resets. Reusing
+        # that verdict rather than testing separately keeps "what gets alerted"
+        # and "what needs re-examination" from drifting apart.
+        opened: list[NewFlag] = []
         for concept, fy, our_value, ref_value, v in flags:
+            triage = preserved_triage(prior.get((concept, fy)), our_value, ref_value)
+            if triage["resolution"] is None and not triage["resolved"]:
+                opened.append(NewFlag(company.ticker, concept, fy, our_value, ref_value, v))
             session.add(ValidationFlag(
                 company_id=company.id, canonical_concept=concept, fiscal_year=fy,
                 our_value=our_value, reference_value=ref_value, variance=v,
-                **preserved_triage(prior.get((concept, fy)), our_value, ref_value),
+                **triage,
             ))
         session.commit()
+
+    # After the commit: an alert about flags that failed to persist would send a
+    # human to a queue that doesn't contain them.
+    notify_new_flags(opened)
 
     matched = len(shared) - len(flags)
     print(f"{ticker.upper()}: {len(shared)} values compared, "

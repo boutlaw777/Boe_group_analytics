@@ -2,6 +2,10 @@
 // so no CORS setup is needed on the FastAPI side.
 export const API_BASE = process.env.FINCLONE_API ?? "http://127.0.0.1:8000";
 
+// BOE DCF, for handing a ticker straight into a new model (QA review Aug 2026,
+// DCF #3). DCF accepts ?ticker= to prefill and &build=1 to build on arrival.
+export const DCF_BASE = process.env.NEXT_PUBLIC_DCF_BASE ?? "https://dcf.boegroup.com";
+
 export interface CompanySummary {
   ticker: string;
   name: string;
@@ -9,6 +13,13 @@ export interface CompanySummary {
   sector: string | null;
   source?: "sec" | "baseline";
 }
+
+/** How much cross-reference checking a single number has actually had. */
+export type ValidationStatus =
+  | "agreed"        // compared against the reference source and matched
+  | "flagged"       // compared and disputed — open in the review queue
+  | "not_compared"  // the reference source doesn't carry this concept
+  | "not_checked";  // never cross-referenced
 
 export interface Fact {
   concept: string;
@@ -22,6 +33,34 @@ export interface Fact {
   filed_date: string;
   derived: boolean;
   source_url: string;
+  validation_status: ValidationStatus;
+  last_validated: string | null;
+}
+
+export interface PeerMetric {
+  key: string;
+  label: string;
+  company: number;
+  median: number;
+  percentile: number;
+  sample: number;
+}
+
+export interface PeerRow {
+  ticker: string;
+  name: string;
+  fiscal_year: number | null;
+  revenue: number | null;
+  [metric: string]: string | number | null;
+}
+
+export interface PeerBenchmark {
+  sector: string | null;
+  peer_count: number;
+  company?: PeerRow;
+  metrics: PeerMetric[];
+  peers: PeerRow[];
+  reason?: string;
 }
 
 export interface ValidationFlag {

@@ -38,6 +38,15 @@ CANONICAL_CONCEPTS: tuple[CanonicalConcept, ...] = (
         "GeneralAndAdministrativeExpense",
     ), is_flow=True),
     CanonicalConcept("operating_income", ("OperatingIncomeLoss",), is_flow=True),
+    CanonicalConcept("interest_expense", (
+        # Filers split this three ways. Order matters: the gross expense lines
+        # come first because InterestIncomeExpenseNet is a *net* figure with the
+        # opposite sign convention, and would silently flip cost of debt.
+        "InterestExpense",
+        "InterestExpenseNonoperating",
+        "InterestExpenseDebt",
+    ), is_flow=True),
+    CanonicalConcept("income_tax_expense", ("IncomeTaxExpenseBenefit",), is_flow=True),
     CanonicalConcept("net_income", (
         "NetIncomeLoss",
         "ProfitLoss",
@@ -56,19 +65,50 @@ CANONICAL_CONCEPTS: tuple[CanonicalConcept, ...] = (
     CanonicalConcept("stock_based_compensation", (
         "ShareBasedCompensation",
     ), is_flow=True),
+    CanonicalConcept("depreciation_amortization", (
+        "DepreciationDepletionAndAmortization",
+        "DepreciationAmortizationAndAccretionNet",
+        "DepreciationAndAmortization",
+    ), is_flow=True),
     CanonicalConcept("cash_and_equivalents", (
         "CashAndCashEquivalentsAtCarryingValue",
     ), is_flow=False),
+    CanonicalConcept("accounts_receivable", (
+        "AccountsReceivableNetCurrent",
+        "ReceivablesNetCurrent",
+    ), is_flow=False),
+    CanonicalConcept("inventory", ("InventoryNet",), is_flow=False),
+    CanonicalConcept("total_current_assets", ("AssetsCurrent",), is_flow=False),
+    CanonicalConcept("ppe_net", ("PropertyPlantAndEquipmentNet",), is_flow=False),
     CanonicalConcept("total_assets", ("Assets",), is_flow=False),
+    CanonicalConcept("accounts_payable", (
+        "AccountsPayableCurrent",
+        "AccountsPayableAndAccruedLiabilitiesCurrent",
+    ), is_flow=False),
+    CanonicalConcept("total_current_liabilities", ("LiabilitiesCurrent",), is_flow=False),
     CanonicalConcept("total_liabilities", ("Liabilities",), is_flow=False),
     CanonicalConcept("stockholders_equity", (
         "StockholdersEquity",
         "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
     ), is_flow=False),
+    # --- debt, split by maturity -------------------------------------------
+    # long_term_debt is deliberately NON-CURRENT only. The FY2023-FY2025 AAPL
+    # validation flags come from comparing it against a reference source that
+    # reports *total* term debt: 78.3 + 12.4 = 90.7 (FY2025), 85.8 + 10.9 = 96.7
+    # (FY2024), 95.3 + 9.8 = 105.1 (FY2023). Both figures are correct; they
+    # answer different questions. Keep the maturity split explicit so a
+    # consumer can add the pieces rather than guess what a total contains.
     CanonicalConcept("long_term_debt", (
         "LongTermDebtNoncurrent",
         "LongTermDebt",
     ), is_flow=False),
+    # Current debt: some filers report a single total (DebtCurrent), others only
+    # the components. Captured separately because priority-order picking returns
+    # ONE tag per concept — for a filer reporting commercial paper and current
+    # term debt as separate lines, picking either alone understates current debt.
+    CanonicalConcept("debt_current", ("DebtCurrent",), is_flow=False),
+    CanonicalConcept("long_term_debt_current", ("LongTermDebtCurrent",), is_flow=False),
+    CanonicalConcept("commercial_paper", ("CommercialPaper",), is_flow=False),
 )
 
 # raw tag -> (canonical name, priority index, is_flow)

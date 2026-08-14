@@ -22,8 +22,18 @@ npm run dev
 ```
 
 Then open http://localhost:3000 — landing page, dashboard with ticker search,
-per-company financials (every value hyperlinked to its SEC filing), extracted
-KPIs, one-click Data Sheet downloads, custom model templates, and Scout.
+per-company financials (every value hyperlinked to its SEC filing, marked with
+its cross-reference status), sector benchmarking, extracted KPIs, one-click Data
+Sheet downloads, custom model templates, and Scout.
+
+Optional web env vars:
+
+- `FINCLONE_API` — backend base URL (default `http://127.0.0.1:8000`)
+- `NEXT_PUBLIC_DCF_BASE` — BOE DCF base URL for the per-company **Build DCF
+  Model** hand-off (default `https://dcf.boegroup.com`)
+
+The two platforms do **not** share a data feed — see
+[docs/data-lineage.md](docs/data-lineage.md).
 
 ## Scout (Phase 3)
 

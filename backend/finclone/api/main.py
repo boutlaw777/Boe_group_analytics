@@ -20,8 +20,10 @@ from sqlalchemy.orm import Session
 from finclone.api import auth as api_auth
 from finclone.api import billing, portal
 from finclone.db import get_session, init_db
-from finclone.models import (AgentRun, AgentStep, ApiKey, ApiKeyUsage, Company, FinancialFact,
-                             KpiFact, SheetTemplate, ValidationFlag, ValuationAuditFinding)
+from finclone.models import (AgentRun, AgentStep, ApiKey, ApiKeyUsage, Company, CrossrefCheck,
+                             FinancialFact, KpiFact, ScreenMetrics, SheetTemplate,
+                             ValidationFlag, ValuationAuditFinding)
+from finclone.pipeline.crossref import COMPARABLE_CONCEPTS
 from finclone.pipeline.ingest import current_facts
 
 # Paths served without an API key even when enforcement is on
@@ -269,7 +271,8 @@ def get_financials(
                 selected.append(min(sec, key=lambda f: f.filed_date))
 
     selected.sort(key=lambda f: (f.canonical_concept, f.fiscal_year, f.fiscal_period))
-    return _facts_to_json(selected)
+    checked_on, flagged = _validation_index(session, company.id)
+    return _facts_to_json(selected, checked_on, flagged)
 
 
 @app.get("/companies/{ticker}/kpis")
@@ -374,6 +377,120 @@ def get_validation_flags(ticker: str, session: Session = Depends(_session)) -> l
         }
         for v in rows
     ]
+
+
+# Metrics worth comparing across a sector, in the order an analyst reads them.
+# Restricted to ratios on purpose: absolute revenue or net income says which
+# company is bigger, not which is performing better, and mixing the two into one
+# "benchmark" table invites exactly that misreading.
+_PEER_METRICS: tuple[tuple[str, str], ...] = (
+    ("gross_margin", "Gross margin"),
+    ("operating_margin", "EBIT margin"),
+    ("net_margin", "Net margin"),
+    ("fcf_margin", "FCF margin"),
+    ("revenue_growth", "Revenue growth"),
+    ("roe", "Return on equity"),
+)
+
+# Below this, a "sector median" is a number with no information in it. Reported
+# as an explicit reason rather than an empty table, so the UI can say why.
+_MIN_PEERS = 3
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _percentile_rank(value: float, population: list[float]) -> float:
+    """Share of the population at or below `value`, 0-100."""
+    if not population:
+        return 0.0
+    return 100.0 * sum(1 for p in population if p <= value) / len(population)
+
+
+@app.get("/companies/{ticker}/peers")
+def get_peers(
+    ticker: str,
+    limit: int = Query(10, ge=1, le=50, description="Peers returned in the table"),
+    session: Session = Depends(_session),
+) -> dict:
+    """Sector benchmarking for one company (QA review Aug 2026, Analytics #5).
+
+    Reads the Scout screening cache rather than recomputing: the metrics are
+    already maintained there by every ingest path, and a second definition of
+    "EBIT margin" that drifts from Scout's would be worse than no benchmark.
+
+    Percentiles are computed against every peer carrying that metric, while the
+    table shows the largest `limit` by revenue — so the ranking reflects the
+    whole sector even though the table is readable.
+    """
+    company = _get_company(session, ticker)
+    if not company.sector:
+        return {"sector": None, "peer_count": 0, "metrics": [], "peers": [],
+                "reason": "This company has no sector classification, so it has no peer set."}
+
+    peer_rows = list(session.execute(
+        select(Company, ScreenMetrics)
+        .join(ScreenMetrics, ScreenMetrics.company_id == Company.id)
+        .where(Company.sector == company.sector)
+    ))
+
+    own: dict | None = None
+    peers: list[dict] = []
+    for peer, row in peer_rows:
+        try:
+            metrics = json.loads(row.metrics_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metrics, dict):
+            continue
+        entry = {
+            "ticker": peer.ticker,
+            "name": peer.name,
+            "fiscal_year": metrics.get("fiscal_year"),
+            "revenue": metrics.get("revenue"),
+            **{key: metrics.get(key) for key, _ in _PEER_METRICS},
+        }
+        if peer.id == company.id:
+            own = entry
+        else:
+            peers.append(entry)
+
+    if own is None:
+        return {"sector": company.sector, "peer_count": len(peers), "metrics": [], "peers": [],
+                "reason": "No screening metrics have been computed for this company yet."}
+    if len(peers) < _MIN_PEERS:
+        return {"sector": company.sector, "peer_count": len(peers), "metrics": [], "peers": [],
+                "reason": f"Only {len(peers)} sector peer(s) have computed metrics — "
+                          f"too few for a meaningful median."}
+
+    benchmarks = []
+    for key, label in _PEER_METRICS:
+        population = [p[key] for p in peers if isinstance(p.get(key), (int, float))]
+        value = own.get(key)
+        if not population or not isinstance(value, (int, float)):
+            continue
+        benchmarks.append({
+            "key": key,
+            "label": label,
+            "company": value,
+            "median": _median(population),
+            "percentile": round(_percentile_rank(value, population), 1),
+            "sample": len(population),
+        })
+
+    peers.sort(key=lambda p: p["revenue"] or 0, reverse=True)
+    return {
+        "sector": company.sector,
+        "peer_count": len(peers),
+        "company": own,
+        "metrics": benchmarks,
+        "peers": peers[:limit],
+    }
 
 
 @app.get("/companies/{ticker}/agent-runs")
@@ -521,7 +638,50 @@ def delete_template(template_id: int, session: Session = Depends(_session)) -> N
     session.commit()
 
 
-def _facts_to_json(selected: list[FinancialFact]) -> list[dict]:
+def _validation_index(
+    session: Session, company_id: int,
+) -> tuple[_date | None, set[tuple[str, int]]]:
+    """(date this company was last cross-referenced, its flagged (concept, year) keys).
+
+    Fetched once per request rather than per fact — a company carries up to a
+    few hundred facts and a handful of flags.
+    """
+    checked = session.get(CrossrefCheck, company_id)
+    flagged = {
+        (concept, fy) for concept, fy in session.execute(
+            select(ValidationFlag.canonical_concept, ValidationFlag.fiscal_year)
+            .where(ValidationFlag.company_id == company_id,
+                   ValidationFlag.resolved.is_(False)))
+    }
+    return (checked.checked if checked else None), flagged
+
+
+def _validation_status(
+    concept: str, fiscal_year: int, checked_on: _date | None,
+    flagged: set[tuple[str, int]],
+) -> str:
+    """How much confidence a single number has earned.
+
+    'not_compared' is reported honestly rather than folded into 'agreed': the
+    reference source only carries part of our taxonomy, so a concept it never
+    covers has not been checked at all, and showing it as agreed would claim
+    verification that never happened.
+    """
+    if (concept, fiscal_year) in flagged:
+        return "flagged"
+    if concept not in COMPARABLE_CONCEPTS:
+        return "not_compared"
+    if checked_on is None:
+        return "not_checked"
+    return "agreed"
+
+
+def _facts_to_json(
+    selected: list[FinancialFact],
+    checked_on: _date | None = None,
+    flagged: set[tuple[str, int]] | None = None,
+) -> list[dict]:
+    flagged = flagged or set()
     return [
         {
             "concept": f.canonical_concept,
@@ -535,6 +695,13 @@ def _facts_to_json(selected: list[FinancialFact]) -> list[dict]:
             "filed_date": f.filed_date.isoformat(),
             "derived": f.derived,
             "source_url": f.source_url,
+            # Validation provenance (QA review Aug 2026, Analytics #3): the
+            # queue already knew which numbers were disputed, but only the queue
+            # page showed it — so a number on the financials table looked equally
+            # trustworthy whether it had been cross-referenced or never checked.
+            "validation_status": _validation_status(
+                f.canonical_concept, f.fiscal_year, checked_on, flagged),
+            "last_validated": checked_on.isoformat() if checked_on else None,
         }
         for f in selected
     ]

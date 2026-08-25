@@ -18,10 +18,11 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "stripe>=9.0",
-    # DATABASE_URL is postgresql+psycopg:// in production (dev default is
-    # SQLite, which needs no driver). Without this the API dies on boot with
-    # ModuleNotFoundError, so it belongs in the base dependencies, not an extra.
-    "psycopg[binary]>=3.1",
+    # Production DATABASE_URL is postgresql+psycopg2:// (dev default is SQLite,
+    # which needs no driver). The dialect in that URL picks the module by name,
+    # so psycopg v3 does not satisfy it — a +psycopg2 URL against psycopg3 dies
+    # on boot with ModuleNotFoundError. Match the URL, not the newer library.
+    "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]

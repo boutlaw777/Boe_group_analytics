@@ -6,24 +6,36 @@
 # Application secrets come from backend.env / web.env, which live only on the
 # VPS and are never written by CI. See deploy/README.md.
 #
-# No database service on purpose: DATABASE_URL points at the existing managed
-# Postgres. finclone/db.py sets `search_path to boe, public` and treats public
-# as the legacy DCF app's schema, so the data this app serves already lives in
-# a database CI must not replace.
+# No database service: Postgres 17 runs on the VPS itself (self-hosted, it
+# replaced Supabase in July 2026) and holds the live data. CI must not replace
+# it, and compose must not manage its lifecycle.
 #
-# No nginx service either: the VPS already terminates TLS and reverse-proxies.
-# Both containers publish on loopback only, so nothing here is reachable from
-# the internet except through that existing nginx.
+# No nginx service: the VPS already terminates TLS and reverse-proxies.
+#
+# --- why host networking ---------------------------------------------------
+# Postgres binds 127.0.0.1:5432 only. In a bridged container 127.0.0.1 is the
+# container itself, so the API would fail every query with "connection
+# refused". The alternatives were to make Postgres listen on the Docker bridge
+# (widening its exposure from loopback to a whole private subnet, plus pg_hba
+# and firewall changes) or to share the host's network namespace. This takes
+# the second: Postgres stays loopback-only and unmodified.
+#
+# The cost is that `ports:` no longer applies — each service binds the host
+# directly — so both are pinned to 127.0.0.1 below. Neither is reachable from
+# the internet except through the existing nginx, which is the same posture as
+# the bridged version.
 
 services:
   backend:
     image: ${BACKEND_IMAGE}
     container_name: boe-backend
     restart: unless-stopped
+    network_mode: host
     env_file:
       - ./backend.env
-    ports:
-      - "127.0.0.1:8000:8000"
+    # The image defaults to --host 0.0.0.0, which under host networking would
+    # publish the API on every interface including the public one.
+    command: ["uvicorn", "finclone.api.main:app", "--host", "127.0.0.1", "--port", "8000"]
     logging: &logging
       driver: json-file
       options:
@@ -34,10 +46,13 @@ services:
     image: ${WEB_IMAGE}
     container_name: boe-web
     restart: unless-stopped
+    network_mode: host
     env_file:
       - ./web.env
-    ports:
-      - "127.0.0.1:3000:3000"
+    environment:
+      # Same reasoning as the backend's command override: the image defaults to
+      # HOSTNAME=0.0.0.0 for the bridged case.
+      HOSTNAME: 127.0.0.1
     depends_on:
       backend:
         # The web tier renders in server components that call the API, so

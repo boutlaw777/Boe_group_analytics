@@ -90,11 +90,29 @@ whatever is still in the registry.
 
 ## Things worth knowing
 
-**The database is not in this stack.** `DATABASE_URL` points at the existing
-managed Postgres, where the app's tables live in the `boe` schema
-(`finclone/db.py` treats `public` as the legacy DCF app's). A Postgres
-container here would have pointed production at an empty database and orphaned
-the real one.
+**The database is not in this stack.** Postgres 17 runs on the VPS itself
+(self-hosted since July 2026, replacing Supabase) and holds the live data. A
+Postgres container here would have pointed production at an empty database and
+orphaned the real one. Backups remain the VPS's job — nothing in this pipeline
+touches or dumps it.
+
+**Both services use host networking.** Postgres binds `127.0.0.1:5432`, and in
+a bridged container `127.0.0.1` is the container itself, so every query would
+fail with "connection refused". The alternative was to make Postgres listen on
+the Docker bridge — widening it from loopback to a private subnet, plus
+`pg_hba` and firewall changes. Sharing the host namespace instead leaves
+Postgres loopback-only and untouched. The cost: `ports:` no longer applies, so
+both services pin themselves to `127.0.0.1` (the backend via a `command`
+override, the web tier via `HOSTNAME`). Neither is reachable except through
+nginx, same as before.
+
+**`finclone/db.py` still sets `search_path to boe, public`,** so the `boe`
+schema must exist in `boe_analytics`. If it does not, Postgres falls through to
+`public` and `init_db()` creates the app's tables there on first boot:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS boe;
+```
 
 **Pipeline jobs are not deployed by this.** The filing monitor, crossref
 sweeps, KPI sweeps and triage runs are batch entrypoints, not services. Run

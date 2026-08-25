@@ -69,6 +69,12 @@ What works today:
   black live formulas (margins, FCF), negatives in parentheses, and an
   industry-KPI tab. `?period=quarterly` for the quarterly view.
 
+## Deployment
+
+Push to `main` and it ships: tests run, images build, the VPS swaps to them,
+and a release that never reports healthy is rolled back automatically. Setup
+and rollback are in [deploy/README.md](deploy/README.md).
+
 ## Backend setup (run these yourself)
 
 ```powershell

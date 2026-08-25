@@ -5,6 +5,10 @@ node_modules/
 # Secrets — real keys live only in backend/.env (see backend/.env.example)
 .env
 .env.local
+# Production secrets live on the VPS only; these names exist so a local copy
+# made from deploy/*.example can never be committed by accident.
+deploy/backend.env
+deploy/web.env
 
 # Build output & caches
 .next/

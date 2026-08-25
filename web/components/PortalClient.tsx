@@ -106,6 +106,7 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
   const [freshKey, setFreshKey] = useState<{ name: string; api_key: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [sub, setSub] = useState<Subscription | null>(null);
+  const [checkout, setCheckout] = useState<"success" | "cancel" | null>(null);
 
   useEffect(() => {
     setToken(localStorage.getItem(TOKEN_KEY));
@@ -150,6 +151,15 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
   useEffect(() => {
     if (token) refresh().catch((e) => setError(e.message));
   }, [token, refresh]);
+
+  // Stripe sends the customer back here with ?checkout=success|cancel. Read it
+  // once and strip it, so a later refresh doesn't replay a stale banner.
+  useEffect(() => {
+    const status = new URLSearchParams(window.location.search).get("checkout");
+    if (status !== "success" && status !== "cancel") return;
+    setCheckout(status);
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
 
   async function submitAuth(e: React.FormEvent) {
     e.preventDefault();
@@ -292,6 +302,18 @@ export function PortalClient({ apiBase }: { apiBase: string }) {
 
       <div className="card" style={{ padding: 20, marginBottom: 18 }}>
         <h3 style={{ marginTop: 0, color: "var(--navy)" }}>Plan &amp; billing</h3>
+        {checkout && (
+          <p style={{
+            margin: "0 0 14px", padding: "10px 12px", borderRadius: 6, fontSize: 14,
+            background: checkout === "success" ? "#e8f5ec" : "#fdf1e7",
+            color: checkout === "success" ? "#1a7f37" : "#8a4b08",
+          }}>
+            {checkout === "success"
+              ? "Payment received. Your plan updates as soon as Stripe confirms it — "
+                + "reload in a moment if it still shows the old tier."
+              : "Checkout cancelled. Nothing was charged."}
+          </p>
+        )}
         <p className="muted" style={{ marginBottom: 14 }}>
           Current plan:{" "}
           <b style={{ color: "var(--text)", textTransform: "capitalize" }}>{sub?.tier ?? "free"}</b>

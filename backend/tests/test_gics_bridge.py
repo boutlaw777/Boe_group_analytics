@@ -168,3 +168,74 @@ def test_canonical_choice_is_deterministic():
     which company happens to be processed first."""
     from finclone.taxonomy.kpi_definitions import _canonical_blueprint_labels
     assert _canonical_blueprint_labels() == _canonical_blueprint_labels()
+
+
+def test_no_anchor_company_products_in_kpi_phrases():
+    """Blueprint KPI phrases become extraction targets and chunk-selection
+    keywords for every company in the industry, so naming the anchor's own
+    product asks Oracle about Azure and Walmart about AWS — a target that can
+    never be extracted and a keyword that matches nothing."""
+    vendor_products = ("azure", "aws", "iphone", "prime video", "windows",
+                       "supercharger", "youtube", "instagram")
+    offenders = [(b.number, b.gics_industry, phrase)
+                 for b in BLUEPRINT for phrase in b.key_kpis
+                 if any(p in phrase.lower() for p in vendor_products)]
+    assert not offenders, f"anchor-specific KPI phrases: {offenders}"
+
+
+def test_synonyms_across_sources_collapse_to_one_target():
+    """SECTOR_KPIS and the blueprint name the same metric differently. Emitting
+    both sends two extraction targets for one number and stores it under two
+    labels, which splits any time series built from it."""
+    cases = [
+        ("7372", "Software & SaaS", {"annual recurring revenue (arr)", "arr"}),
+        ("3711", "Automotive", {"vehicle deliveries", "deliveries"}),
+        ("3711", "Automotive", {"vehicle production", "production"}),
+        ("5812", "Retail",
+         {"same-store / comparable sales growth", "same-store sales", "comp sales"}),
+        ("5812", "Retail", {"store count", "units"}),
+        ("1311", "Oil & Gas", {"proved reserves", "reserves"}),
+        ("3571", "Computer Hardware", {"units shipped", "units"}),
+        ("7812", "Media & Entertainment", {"subscriber count", "members"}),
+    ]
+    for sic, sector, group in cases:
+        labels = [k["label"].lower() for k in kpis_for_company(sic, sector)]
+        hits = [label for label in labels if label in group]
+        assert len(hits) == 1, f"{sector}/{sic}: {group} emitted as {hits}"
+
+
+def test_generic_kpis_collapse_into_blueprint_synonyms():
+    """GENERIC_KPIS applies to every company, so its verbose labels collide
+    with blueprint shorthand in industries no sector table covers."""
+    labels = [k["label"].lower() for k in kpis_for_company("7372", "Software & SaaS")]
+    assert sum(label in {"rpo", "backlog / remaining performance obligations"}
+               for label in labels) == 1
+    assert sum(label in {"employee headcount", "headcount"} for label in labels) == 1
+
+
+def test_losing_synonym_contributes_its_keywords():
+    """The point of merging rather than discarding: the dropped spelling is
+    still how some filings word it, so it has to survive as a search keyword."""
+    software = {k["label"]: k for k in kpis_for_company("7372", "Software & SaaS")}
+    assert "backlog" in software["RPO"]["keywords"]      # from GENERIC_KPIS
+    retail = {k["label"]: k for k in kpis_for_company("5812", "Retail")}
+    assert "units" in retail["Store count"]["keywords"]  # from the blueprint
+
+
+def test_returned_kpis_are_caller_owned_copies():
+    """Callers get dicts they may mutate; the sources are module-level
+    constants shared by every company in the sweep."""
+    first = kpis_for_company("7372", "Software & SaaS")
+    first[0]["keywords"].append("scribbled-on")
+    second = kpis_for_company("7372", "Software & SaaS")
+    assert "scribbled-on" not in second[0]["keywords"]
+
+
+def test_sector_scoped_synonyms_do_not_leak_across_sectors():
+    """"units" means store count for a restaurant chain and units shipped for a
+    hardware maker — the reason the groups are keyed by sector at all."""
+    from finclone.taxonomy.kpi_definitions import _merge_key
+    assert _merge_key("units", "Retail") == _merge_key("store count", "Retail")
+    assert _merge_key("units", "Computer Hardware") != _merge_key("store count",
+                                                                 "Computer Hardware")
+    assert _merge_key("units", None) == "units"

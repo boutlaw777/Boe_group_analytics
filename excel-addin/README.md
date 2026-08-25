@@ -66,5 +66,7 @@ Insert → My Add-ins → Shared Folder.
 
 - The backend URL is editable in the pane (default `https://localhost:8443`).
   For the custom function, edit `API_BASE` at the top of `src/functions.js`.
-- Icons are referenced but not bundled; Excel shows a default icon. Add
-  `src/assets/icon-{16,32,64,80}.png` to brand it.
+- Ribbon icons live in `src/assets/icon-{16,32,64,80}.png`, the four sizes
+  `manifest.xml` references. Regenerate them with
+  `python tools/make_icons.py` (needs Pillow) after changing the monogram or
+  the brand navy.

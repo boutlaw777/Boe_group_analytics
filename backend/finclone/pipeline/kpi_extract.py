@@ -17,6 +17,7 @@ is resumable and skips already-covered companies on re-run.
 """
 
 import json
+import re
 import time
 from datetime import date
 
@@ -42,7 +43,8 @@ class _NotIngested(Exception):
     ticker->CIK drift since ingest. Skippable in a sweep, fatal for an
     explicitly named ticker."""
 from finclone.taxonomy.gics_bridge import industry_for_company
-from finclone.taxonomy.kpi_definitions import kpis_for_company
+from finclone.taxonomy.kpi_definitions import (
+    canonical_name_index, kpis_for_company, resolve_kpi_name)
 
 _CHUNK_SIZE = 15_000  # characters
 _CHUNK_OVERLAP = 500
@@ -70,11 +72,11 @@ Respond with JSON only, in exactly this shape:
 {
   "kpis": [
     {
-      "name": "canonical KPI name from the target list",
+      "name": "exactly one of the target KPI names, copied verbatim",
       "value": 1200000000,
       "value_text": "the value exactly as written, e.g. $1.2 billion",
       "unit": "USD | rooms | percent | employees | ...",
-      "period": "fiscal period as stated, e.g. Q3 2025 or fiscal year 2025",
+      "period": "canonical fiscal period, e.g. Q3 FY2025 or FY2025",
       "quote": "verbatim sentence from the document containing this value"
     }
   ]
@@ -100,6 +102,57 @@ def _select_chunks(text: str, keywords: list[str], max_chunks: int) -> list[str]
     return [chunk for _, chunk in scored[:max_chunks]]
 
 
+# Unit spellings that mean the same thing. Values are already normalized to
+# base units, so this is purely about the label a chart or a peer comparison
+# groups on: "$", "USD" and "dollars" splitting one series three ways is the
+# same failure as the KPI name doing it.
+_UNIT_SYNONYMS: dict[str, str] = {
+    "$": "USD", "us$": "USD", "usd": "USD", "dollar": "USD", "dollars": "USD",
+    "u.s. dollars": "USD", "us dollars": "USD", "usd millions": "USD",
+    "%": "percent", "pct": "percent", "percent": "percent",
+    "percentage": "percent", "percentage points": "percent",
+    "employee": "employees", "headcount": "employees", "people": "employees",
+    "share": "shares", "sq ft": "square feet", "sqft": "square feet",
+}
+
+# "Q3 2025", "Q3 FY2025", "third quarter of fiscal 2025" are one period, but
+# KpiFact is unique on (company, name, period, accession) — so an unnormalized
+# spelling doesn't collide with its twin, it stores a duplicate datapoint and
+# breaks the time series. The prompt asks for the canonical form; this is the
+# check that it actually arrived in one, since a prompt is a request.
+_QUARTER = re.compile(r"^q([1-4])\s*(?:fy)?\s*(\d{4})$")
+_HALF = re.compile(r"^h([12])\s*(?:fy)?\s*(\d{4})$")
+_FULL_YEAR = re.compile(
+    r"^(?:fy|fiscal(?:\s+year)?|full\s+year|year\s+ended)?\s*(\d{4})$")
+_ISO_DATE = re.compile(r"^(?:as\s+of\s+)?(\d{4}-\d{2}-\d{2})$")
+
+
+def normalize_unit(unit: str) -> str:
+    """Canonical spelling of a unit, or the unit as written if unrecognized."""
+    cleaned = " ".join(unit.strip().split())
+    return _UNIT_SYNONYMS.get(cleaned.lower(), cleaned)
+
+
+def normalize_period(period: str) -> str:
+    """Canonical fiscal period, or the period as written if unrecognized.
+
+    Unrecognized is left alone on purpose: a period this can't parse is one a
+    reviewer should see in the model's own words, not one to guess at.
+    """
+    cleaned = " ".join(period.strip().split()).lower().replace("fy ", "fy")
+    for pattern, template in ((_QUARTER, "Q{0} FY{1}"), (_HALF, "H{0} FY{1}")):
+        match = pattern.match(cleaned)
+        if match:
+            return template.format(*match.groups())
+    match = _ISO_DATE.match(cleaned)
+    if match:
+        return f"as of {match.group(1)}"
+    match = _FULL_YEAR.match(cleaned)
+    if match:
+        return f"FY{match.group(1)}"
+    return " ".join(period.strip().split())
+
+
 def _clean_kpi(raw: object) -> dict | None:
     """Validate one model-produced record; DeepSeek's JSON mode guarantees
     syntax, not shape, so every field is checked before storage."""
@@ -123,8 +176,8 @@ def _clean_kpi(raw: object) -> dict | None:
         "name": name,
         "value": float(value) if value is not None else None,
         "value_text": value_text,
-        "unit": str(raw.get("unit") or "").strip(),
-        "period": period,
+        "unit": normalize_unit(str(raw.get("unit") or "")),
+        "period": normalize_period(period),
         "quote": quote,
     }
 
@@ -178,23 +231,32 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
     kpi_defs = kpis_for_company(company.sic, company.sector)
     keywords = [kw for kpi in kpi_defs for kw in kpi["keywords"]]
     labels = [kpi["label"] for kpi in kpi_defs]
-    # The model echoes the target label back with its own casing, so the same
-    # KPI arrived as both "Share repurchases" and "share repurchases" and was
-    # counted twice. Map whatever it returns back onto our canonical label.
-    canonical = {label.strip().lower(): label for label in labels}
+    # The model rewords the target label as often as it echoes it, so the same
+    # metric arrived as "RevPAR", "revpar" and "Revenue per available room" and
+    # was stored three times. Map whatever it returns back onto this industry's
+    # name for the metric; see canonical_name_index for what counts as a match.
+    canonical = canonical_name_index(labels)
     chunks = _select_chunks(text, keywords, KPI_MAX_CHUNKS)
     if not chunks:
         print(f"{ticker.upper()}: no KPI-relevant sections found in the filing")
         return
 
     found: dict[tuple[str, str], dict] = {}
+    off_list: dict[str, int] = {}
     for i, chunk in enumerate(chunks, 1):
         print(f"  analyzing section {i}/{len(chunks)}...")
         for attempt in range(4):
             try:
                 for kpi in _extract_from_chunk(llm, labels, chunk):
                     stated = kpi["name"].strip()
-                    kpi["name"] = canonical.get(stated.lower(), stated)
+                    resolved = resolve_kpi_name(stated, canonical)
+                    # An unresolved name is kept, not dropped: the model does
+                    # surface real KPIs nobody thought to list, and Data Point
+                    # Search exists to find exactly those. It is counted below
+                    # so the drift is visible instead of silent.
+                    kpi["name"] = resolved or stated
+                    if resolved is None:
+                        off_list[stated] = off_list.get(stated, 0) + 1
                     key = (kpi["name"].lower(), kpi["period"].lower())
                     found.setdefault(key, kpi)
                 break
@@ -245,6 +307,13 @@ def extract_ticker(ticker: str, client: EdgarClient, llm: OpenAI) -> None:
     print(f"{ticker.upper()}: {len(found)} KPIs extracted, {inserted} new stored")
     for kpi in found.values():
         print(f"  {kpi['name']} [{kpi['period']}]: {kpi['value_text']} ({kpi['unit']})")
+    if off_list:
+        # Named, not just counted: a name that keeps recurring across a sweep is
+        # either a KPI the industry's target list is missing or a wording the
+        # resolver should learn, and neither is visible from a total.
+        names = ", ".join(f"{name} (x{n})" for name, n in sorted(off_list.items()))
+        print(f"  note: {len(off_list)} KPI name(s) outside this industry's "
+              f"target list, stored as the model worded them — {names}")
 
 
 def main() -> None:

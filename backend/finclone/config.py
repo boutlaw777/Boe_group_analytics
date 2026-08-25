@@ -156,11 +156,16 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 # Stripe Price IDs for each paid tier (create these in the Stripe dashboard).
 STRIPE_PRICE_PRO = os.environ.get("STRIPE_PRICE_PRO", "")
 STRIPE_PRICE_ENTERPRISE = os.environ.get("STRIPE_PRICE_ENTERPRISE", "")
-# Where Stripe returns the user after checkout / billing-portal (your web app).
+# Where Stripe returns the user after checkout / billing-portal. Must be a page
+# the web app actually serves: the default used to be /account, which no route
+# renders, so every completed checkout landed the customer on a 404 with their
+# card already charged. The plan UI lives in the developer portal.
 BILLING_SUCCESS_URL = os.environ.get(
-    "FINCLONE_BILLING_SUCCESS_URL", "http://localhost:3000/account?checkout=success")
+    "FINCLONE_BILLING_SUCCESS_URL",
+    "http://localhost:3000/developers/portal?checkout=success")
 BILLING_CANCEL_URL = os.environ.get(
-    "FINCLONE_BILLING_CANCEL_URL", "http://localhost:3000/account?checkout=cancel")
+    "FINCLONE_BILLING_CANCEL_URL",
+    "http://localhost:3000/developers/portal?checkout=cancel")
 
 # Maps our tier name -> Stripe Price ID, and back. The webhook resolves an
 # incoming Price ID to a tier; checkout resolves a tier to a Price ID.

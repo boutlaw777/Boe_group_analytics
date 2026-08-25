@@ -26,6 +26,14 @@ EXPOSE 8000
 # httpx is already a dependency, so the check costs no extra image weight —
 # curl is not installed in slim and does not need to be.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import sys,httpx; sys.exit(0 if httpx.get('http://127.0.0.1:8000/health',timeout=4).status_code==200 else 1)"
+  CMD python -c "import os,sys,httpx; sys.exit(0 if httpx.get('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/health',timeout=4).status_code==200 else 1)"
 
-CMD ["uvicorn", "finclone.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# HOST/PORT drive the entrypoint and the healthcheck alike, so moving the port
+# can never leave the probe pointing at the old one -- which would mark every
+# container unhealthy and roll back every deploy forever.
+ENV HOST=0.0.0.0
+ENV PORT=8000
+
+# sh -c so ${HOST}/${PORT} expand; exec so uvicorn stays PID 1 and receives
+# docker's stop signal directly.
+CMD ["sh", "-c", "exec uvicorn finclone.api.main:app --host ${HOST} --port ${PORT}"]

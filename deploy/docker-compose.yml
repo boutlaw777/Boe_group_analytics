@@ -33,9 +33,23 @@ services:
     network_mode: host
     env_file:
       - ./backend.env
-    # The image defaults to --host 0.0.0.0, which under host networking would
-    # publish the API on every interface including the public one.
-    command: ["uvicorn", "finclone.api.main:app", "--host", "127.0.0.1", "--port", "8000"]
+    environment:
+      # 8100 and 3200 below are not arbitrary: they are what the
+      # analytics.boegroup.com vhost already proxies to.
+      #   location /api/  ->  127.0.0.1:8100
+      #   location /      ->  127.0.0.1:3200
+      # Nothing is listening on either right now, which is why that domain is
+      # down. Binding them here brings it back with no nginx change.
+      #
+      # Explicitly NOT 8020 or 3000: those belong to canalyst-clone.service and
+      # the pm2-managed DCF app on this same box. Taking either would have put
+      # a working site off the air to bring this one up.
+      PORT: "8100"
+      # The image defaults to 0.0.0.0, which under host networking would publish
+      # the API on the public interface. nginx is the only thing that should
+      # reach it.
+      HOST: "127.0.0.1"
+
     logging: &logging
       driver: json-file
       options:
@@ -50,9 +64,8 @@ services:
     env_file:
       - ./web.env
     environment:
-      # Same reasoning as the backend's command override: the image defaults to
-      # HOSTNAME=0.0.0.0 for the bridged case.
-      HOSTNAME: 127.0.0.1
+      PORT: "3200"
+      HOSTNAME: "127.0.0.1"
     depends_on:
       backend:
         # The web tier renders in server components that call the API, so

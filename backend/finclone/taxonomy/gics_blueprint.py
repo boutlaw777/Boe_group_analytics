@@ -16,6 +16,12 @@ build sequence (1 = highest-value anchors, 3 = niche/specialized).
 
 NB: anchor companies are modeling anchors chosen for scale/disclosure/relevance,
 not permanent market-cap leaders — revalidate before commercial use.
+
+KPI phrases are industry-level, not anchor-level. Where the source PDF names the
+anchor's own segment ("AWS growth" for Broadline Retail, "Azure growth" for
+Software), it is generalized ("Cloud growth"): these phrases become extraction
+targets and chunk-selection keywords for *every* company in the industry, so a
+vendor name asks Oracle about Azure and matches nothing in its filing.
 """
 
 from dataclasses import dataclass
@@ -80,7 +86,7 @@ BLUEPRINT: tuple[IndustryBlueprint, ...] = (
     IndustryBlueprint(27, "Consumer Discretionary", "Consumer Services", "Hotels, Restaurants & Leisure", "McDonald's", "MCD", "Restaurants / leisure", _v("DCF, EV/EBITDA"), _k("Same-store sales; units; franchise margin"), 4, 1, "Consumer analyst"),
     IndustryBlueprint(28, "Consumer Discretionary", "Consumer Services", "Diversified Consumer Services", "H&R Block", "HRB", "Consumer services", _v("DCF, P/E"), _k("Clients; revenue/client; retention; attach rate"), 3, 3, "Vendor"),
     IndustryBlueprint(29, "Consumer Discretionary", "Consumer Discretionary Distribution & Retail", "Distributors", "Pool Corp.", "POOL", "Distribution", _v("DCF, EV/EBITDA"), _k("Sales/day; volume; price; inventory turns"), 3, 3, "Vendor"),
-    IndustryBlueprint(30, "Consumer Discretionary", "Consumer Discretionary Distribution & Retail", "Broadline Retail", "Amazon", "AMZN", "E-commerce + cloud", _v("SOTP, DCF, EV/EBITDA"), _k("GMV; AWS growth; fulfillment cost; ads"), 5, 1, "BOE"),
+    IndustryBlueprint(30, "Consumer Discretionary", "Consumer Discretionary Distribution & Retail", "Broadline Retail", "Amazon", "AMZN", "E-commerce + cloud", _v("SOTP, DCF, EV/EBITDA"), _k("GMV; Cloud growth; fulfillment cost; ads"), 5, 1, "BOE"),
     IndustryBlueprint(31, "Consumer Discretionary", "Consumer Discretionary Distribution & Retail", "Specialty Retail", "Home Depot", "HD", "Retail", _v("DCF, EV/EBITDA, P/E"), _k("Comp sales; ticket; transactions; inventory turns"), 4, 1, "Consumer analyst"),
     # --- Consumer Staples (6) ---
     IndustryBlueprint(32, "Consumer Staples", "Consumer Staples Distribution & Retail", "Consumer Staples Distribution & Retail", "Walmart", "WMT", "Staples retail", _v("DCF, EV/EBITDA, P/E"), _k("Comp sales; traffic; ticket; e-commerce; margin"), 4, 1, "BOE"),
@@ -105,7 +111,7 @@ BLUEPRINT: tuple[IndustryBlueprint, ...] = (
     IndustryBlueprint(49, "Financials", "Insurance", "Insurance", "Progressive", "PGR", "Insurance", _v("P/B, P/E, ROE"), _k("Premium growth; combined ratio; retention; reserves"), 5, 1, "Insurance specialist"),
     # --- Information Technology (6) ---
     IndustryBlueprint(50, "Information Technology", "Software & Services", "IT Services", "IBM", "IBM", "IT services", _v("DCF, EV/FCF"), _k("Bookings; backlog; recurring mix; FCF conversion"), 4, 2, "BOE"),
-    IndustryBlueprint(51, "Information Technology", "Software & Services", "Software", "Microsoft", "MSFT", "Software / SaaS", _v("DCF, EV/FCF, SOTP"), _k("ARR; Azure growth; RPO; seats; margin; SBC"), 5, 1, "BOE"),
+    IndustryBlueprint(51, "Information Technology", "Software & Services", "Software", "Microsoft", "MSFT", "Software / SaaS", _v("DCF, EV/FCF, SOTP"), _k("ARR; Cloud growth; RPO; seats; margin; SBC"), 5, 1, "BOE"),
     IndustryBlueprint(52, "Information Technology", "Technology Hardware & Equipment", "Communications Equipment", "Cisco Systems", "CSCO", "Communications equipment", _v("DCF, EV/FCF"), _k("Product orders; backlog; ARR; gross margin"), 4, 2, "Technology specialist"),
     IndustryBlueprint(53, "Information Technology", "Technology Hardware & Equipment", "Technology Hardware, Storage & Peripherals", "Apple", "AAPL", "Hardware ecosystem", _v("DCF, P/E"), _k("Units; ASP; installed base; services mix; margin"), 5, 1, "BOE"),
     IndustryBlueprint(54, "Information Technology", "Technology Hardware & Equipment", "Electronic Equipment, Instruments & Components", "Amphenol", "APH", "Electronic components", _v("DCF, EV/EBITDA"), _k("Organic growth; content; end-market mix; margin"), 4, 2, "Technology specialist"),

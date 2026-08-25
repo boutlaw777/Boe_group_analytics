@@ -103,6 +103,14 @@ pytest
 - KPI extraction sends at most `FINCLONE_KPI_MAX_CHUNKS` filing sections to the
   LLM per run (cost control). Extracted KPIs are model output, not audited data —
   the stored `source_quote` exists so a reviewer can verify each value.
+- **Standardized KPI names**: the model rewords target labels ("RevPAR" one
+  filing, "Revenue per available room" the next), so every extracted name is
+  resolved back to the industry's own name for the metric, and periods/units are
+  normalized to one spelling. Without this a KPI can't be compared across an
+  industry or found by name. Names outside the industry's target list are kept
+  as the model worded them and reported at the end of the run. To restandardize
+  rows extracted before this: `python -m finclone.pipeline.normalize_kpis`
+  (dry run; add `--apply` to write).
 - **Filing monitor**: `python -m finclone.pipeline.monitor` checks every tracked
   company for new 10-K/10-Q/8-K filings and re-ingests when found. Run it once
   (schedule with Windows Task Scheduler / cron) or continuously with

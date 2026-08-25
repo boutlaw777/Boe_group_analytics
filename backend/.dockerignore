@@ -1,0 +1,13 @@
+.env
+*.db
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+tests/
+node_modules/
+package.json
+package-lock.json
+pnpm-lock.yaml
+pipeline_run.log

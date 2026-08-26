@@ -2,14 +2,22 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    # Not main: a push there runs Deploy, which calls this workflow itself.
+    # Running both meant two runs racing for one concurrency group, and the
+    # loser was sometimes Deploy's copy -- which surfaces as a startup_failure
+    # on Deploy rather than a cancellation, i.e. a deploy silently not
+    # happening because its own test run was cancelled out from under it.
+    branches-ignore: [main]
   pull_request:
   # Called by deploy.yml so production can never ship a red build.
   workflow_call:
 
 # Superseded runs on the same branch are pointless; a queued deploy is not.
+# github.workflow is the *caller's* name under workflow_call, so a run invoked
+# from Deploy lands in its own group instead of contending with a standalone
+# CI run on the same ref.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

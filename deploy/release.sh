@@ -39,7 +39,12 @@ done
 # the air, and the rollback below would not put it back.
 check_port_free() {
   local port="$1" pids pid cgroup
-  pids="$(ss -tlnp "sport = :$port" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u)"
+  # The `|| true` is load-bearing. grep exits 1 when it matches nothing, which
+  # under `set -o pipefail` fails the whole pipeline and, under `set -e`, kills
+  # the script at this assignment -- silently, before it prints anything. A free
+  # port is the normal case, so without this the guard let the deploy through
+  # only when a port was already taken: exactly backwards.
+  pids="$(ss -tlnp "sport = :$port" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u || true)"
   [ -z "$pids" ] && return 0
 
   for pid in $pids; do
